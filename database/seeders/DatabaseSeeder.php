@@ -2,8 +2,6 @@
 
 namespace Database\Seeders;
 
-use App\Models\User;
-// use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 
 class DatabaseSeeder extends Seeder
@@ -13,11 +11,33 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // User::factory(10)->create();
+        $this->command->info('');
+        $this->command->info('🌱 Seeding TaskMaster AI Database...');
+        $this->command->info('');
 
-        User::factory()->create([
-            'name' => 'Test User',
-            'email' => 'test@example.com',
+        $this->call([
+            UserSeeder::class,
+            TagSeeder::class,
+            ProjectSeeder::class,
+            TaskSeeder::class,
+            CommentSeeder::class,
         ]);
+
+        $this->command->info('');
+        $this->command->line('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        $this->command->info('✨ Database seeding completed successfully!');
+        $this->command->line('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        $this->command->info('');
+        $this->command->info('📊 Summary:');
+        $this->command->info('  • 8 Users');
+        $this->command->info('  • 12 Tags');
+        $this->command->info('  • 5 Projects');
+        $this->command->info('  • 14 Tasks with tags');
+        $this->command->info('  • 14 Comments');
+        $this->command->info('');
+        $this->command->info('🔐 Default Credentials:');
+        $this->command->info('  Email: admin@taskmaster.ai');
+        $this->command->info('  Password: password');
+        $this->command->info('');
     }
 }
