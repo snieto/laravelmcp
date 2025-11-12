@@ -1,0 +1,156 @@
+version: '3.8'
+
+services:
+  # PHP-FPM Application
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: development
+    container_name: taskmaster_app
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./:/var/www/html
+      - ./docker/php/local.ini:/usr/local/etc/php/conf.d/local.ini
+    environment:
+      - PHP_IDE_CONFIG=serverName=taskmaster
+      - XDEBUG_MODE=debug
+      - XDEBUG_CONFIG=client_host=host.docker.internal
+    networks:
+      - taskmaster
+    depends_on:
+      - postgres
+      - redis
+
+  # Nginx Web Server
+  nginx:
+    image: nginx:alpine
+    container_name: taskmaster_nginx
+    restart: unless-stopped
+    ports:
+      - "8000:80"
+    volumes:
+      - ./:/var/www/html
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./docker/nginx/sites/:/etc/nginx/sites-available/
+      - ./docker/nginx/conf.d/:/etc/nginx/conf.d/
+      - ./storage/logs/nginx:/var/log/nginx
+    networks:
+      - taskmaster
+    depends_on:
+      - app
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: taskmaster_postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-taskmaster}
+      POSTGRES_USER: ${DB_USERNAME:-taskmaster}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - taskmaster
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-taskmaster}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache & Queue
+  redis:
+    image: redis:7-alpine
+    container_name: taskmaster_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - taskmaster
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Node.js for Asset Compilation (Vite/Mix)
+  node:
+    image: node:20-alpine
+    container_name: taskmaster_node
+    working_dir: /var/www/html
+    volumes:
+      - ./:/var/www/html
+    ports:
+      - "5173:5173"
+    networks:
+      - taskmaster
+    command: sh -c "npm install && npm run dev"
+    depends_on:
+      - app
+
+  # Laravel Queue Worker
+  queue:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: development
+    container_name: taskmaster_queue
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./:/var/www/html
+    networks:
+      - taskmaster
+    depends_on:
+      - postgres
+      - redis
+    command: php artisan queue:work --tries=3 --timeout=90
+
+  # Laravel Scheduler
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: development
+    container_name: taskmaster_scheduler
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./:/var/www/html
+    networks:
+      - taskmaster
+    depends_on:
+      - postgres
+      - redis
+    command: sh -c "while true; do php artisan schedule:run --verbose --no-interaction & sleep 60; done"
+
+  # Adminer - Database Management UI
+  adminer:
+    image: adminer:latest
+    container_name: taskmaster_adminer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    networks:
+      - taskmaster
+    depends_on:
+      - postgres
+
+networks:
+  taskmaster:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
