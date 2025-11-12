@@ -1,0 +1,80 @@
+<?php
+
+namespace App\Mcp\Tools;
+
+use App\Domain\AIIntegration\Services\TaskDescriptionGenerator;
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use Illuminate\JsonSchema\JsonSchema;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
+use Laravel\Mcp\Server\Tool;
+
+class ImproveTaskTitle extends Tool
+{
+    /**
+     * The tool's description.
+     */
+    protected string $description = <<<'MARKDOWN'
+        Use AI to improve a task title to be more clear, actionable, and follow best practices.
+        The AI considers the task description and context to suggest a better title.
+    MARKDOWN;
+
+    public function __construct(
+        private readonly TaskDescriptionGenerator $descriptionGenerator,
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {
+    }
+
+    /**
+     * Handle the tool request.
+     */
+    public function handle(Request $request): Response
+    {
+        $taskId = $request->input('task_id');
+        $task = $this->taskRepository->findById($taskId);
+
+        if (!$task) {
+            return Response::json([
+                'success' => false,
+                'error' => "Task #{$taskId} not found",
+            ]);
+        }
+
+        try {
+            $improvedTitle = $this->descriptionGenerator->improveTitle($task);
+
+            // Clean up the response (remove quotes if present)
+            $improvedTitle = trim($improvedTitle, '"\'');
+
+            return Response::json([
+                'success' => true,
+                'task_id' => $task->id,
+                'original_title' => $task->title,
+                'improved_title' => $improvedTitle,
+                'apply' => false,
+                'message' => 'AI-improved title generated. Set apply=true to update the task.',
+            ]);
+        } catch (\Exception $e) {
+            return Response::json([
+                'success' => false,
+                'error' => 'Failed to improve title: '.$e->getMessage(),
+                'hint' => 'Make sure OPENAI_API_KEY is configured in .env',
+            ]);
+        }
+    }
+
+    /**
+     * Get the tool's input schema.
+     *
+     * @return array<string, \Illuminate\JsonSchema\JsonSchema>
+     */
+    public function schema(JsonSchema $schema): array
+    {
+        return [
+            'task_id' => $schema->integer()
+                ->description('The ID of the task to improve the title for')
+                ->minimum(1)
+                ->required(),
+        ];
+    }
+}
