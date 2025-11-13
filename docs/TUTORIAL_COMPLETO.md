@@ -13024,3 +13024,1119 @@ php artisan test tests/Unit/Domain/ValueObjects/StatusTest.php
 ---
 
 **Estado del Tutorial:** Capítulos 1-11 de 15 completados ✓
+
+# Capítulo 12: ReportsServer - Generación de Reportes y Exportación
+
+## 12.1 ¿Qué es el ReportsServer?
+
+El **ReportsServer** es un servidor MCP especializado que proporciona herramientas para **generar reportes completos** y **exportar datos** en múltiples formatos (JSON, Markdown, HTML, CSV).
+
+### Analogía: El Centro de Análisis de Datos
+
+Imagina que eres el **director ejecutivo de una empresa**. Necesitas tomar decisiones estratégicas, pero no tienes tiempo de revisar cada tarea individual o consultar manualmente con cada equipo.
+
+**¿Qué necesitas?**
+- **Reportes de Sprint**: ¿Cómo fue el último sprint? ¿Cuántas tareas completamos?
+- **Estado de Proyectos**: ¿Qué proyectos están en riesgo? ¿Cuál es su salud general?
+- **Performance de Usuarios**: ¿Quién está sobrecargado? ¿Quién necesita más trabajo?
+- **Resumen Ejecutivo**: Una vista panorámica de toda la organización
+- **Exportaciones de Datos**: Datos sin procesar para análisis externo en Excel
+
+El **ReportsServer** es como tu **Centro de Análisis de Datos**: genera automáticamente todos estos reportes con métricas calculadas, análisis de tendencias, y los formatea para presentación o análisis.
+
+### Diferencia con AnalyticsResourcesServer
+
+| **AnalyticsResourcesServer** | **ReportsServer** |
+|------------------------------|-------------------|
+| **Resources** (solo lectura) | **Tools** (generación activa) |
+| Métricas en tiempo real | Reportes de períodos específicos |
+| Datos estructurados JSON | Múltiples formatos de salida |
+| Vista actual del sistema | Análisis histórico y tendencias |
+| Acceso rápido a métricas | Documentos completos formateados |
+
+**En resumen:**
+- **AnalyticsResourcesServer**: "Dame las métricas actuales del equipo"
+- **ReportsServer**: "Genera un reporte completo del sprint del 1-15 de marzo en formato Markdown"
+
+## 12.2 Arquitectura del ReportsServer
+
+### Estructura del Servidor
+
+```
+app/Mcp/Servers/
+└── ReportsServer.php                    → Servidor MCP principal
+
+app/Mcp/Tools/
+├── GenerateSprintReport.php             → Reporte de sprint completo
+├── GenerateProjectStatusReport.php      → Estado del proyecto
+├── GenerateUserPerformanceReport.php    → Performance individual
+├── GenerateExecutiveSummary.php         → Resumen ejecutivo
+└── ExportTasks.php                      → Exportar tareas filtradas
+```
+
+### Diagrama de Flujo: Generación de Reporte
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                       REPORTS SERVER                             │
+│                                                                  │
+│  Claude solicita:                                                │
+│  "Genera reporte sprint 01-15 marzo formato markdown"           │
+│                            │                                     │
+│                            ▼                                     │
+│  ┌─────────────────────────────────────────────────────┐       │
+│  │        GenerateSprintReport Tool                     │       │
+│  │  ┌────────────────────────────────────────────┐    │       │
+│  │  │  1. Validar parámetros (JSON Schema)       │    │       │
+│  │  │     - start_date: "2025-03-01"             │    │       │
+│  │  │     - end_date: "2025-03-15"               │    │       │
+│  │  │     - format: "markdown"                   │    │       │
+│  │  └────────────────────────────────────────────┘    │       │
+│  │                      │                               │       │
+│  │                      ▼                               │       │
+│  │  ┌────────────────────────────────────────────┐    │       │
+│  │  │  2. Recopilar datos del período            │    │       │
+│  │  │     • MetricsCollector                     │    │       │
+│  │  │     • TaskRepository                       │    │       │
+│  │  │     • Filtrar tareas por fechas            │    │       │
+│  │  └────────────────────────────────────────────┘    │       │
+│  │                      │                               │       │
+│  │                      ▼                               │       │
+│  │  ┌────────────────────────────────────────────┐    │       │
+│  │  │  3. Calcular métricas del sprint           │    │       │
+│  │  │     • Completion rate: 87%                 │    │       │
+│  │  │     • Velocity: 3.2 tasks/day              │    │       │
+│  │  │     • Status breakdown                     │    │       │
+│  │  │     • Team performance                     │    │       │
+│  │  │     • Blockers identificados               │    │       │
+│  │  └────────────────────────────────────────────┘    │       │
+│  │                      │                               │       │
+│  │                      ▼                               │       │
+│  │  ┌────────────────────────────────────────────┐    │       │
+│  │  │  4. Formatear según formato solicitado     │    │       │
+│  │  │     formatAsMarkdown()                     │    │       │
+│  │  │     - Headers, bullets, tables             │    │       │
+│  │  │     - Secciones organizadas                │    │       │
+│  │  │     - Lista de blockers                    │    │       │
+│  │  └────────────────────────────────────────────┘    │       │
+│  │                      │                               │       │
+│  │                      ▼                               │       │
+│  │  ┌────────────────────────────────────────────┐    │       │
+│  │  │  5. Retornar Response JSON                 │    │       │
+│  │  │     {                                      │    │       │
+│  │  │       success: true,                       │    │       │
+│  │  │       format: "markdown",                  │    │       │
+│  │  │       content: "# Sprint Report\n..."      │    │       │
+│  │  │     }                                      │    │       │
+│  │  └────────────────────────────────────────────┘    │       │
+│  └─────────────────────────────────────────────────────┘       │
+│                            │                                     │
+│                            ▼                                     │
+│  Claude recibe documento Markdown completo y lo muestra al      │
+│  usuario de forma legible                                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## 12.3 ReportsServer.php - El Servidor Principal
+
+Primero, veamos cómo se define el servidor (archivo: `app/Mcp/Servers/ReportsServer.php`):
+
+```php
+<?php
+
+namespace App\Mcp\Servers;
+
+use Laravel\Mcp\Server;
+
+class ReportsServer extends Server
+{
+    protected string $name = 'Reports';
+    protected string $version = '1.0.0';
+
+    protected string $instructions = <<<'MARKDOWN'
+        # Reports Server
+
+        This server provides tools for generating comprehensive
+        reports and exports.
+
+        ## Available Tools
+
+        1. **generate-sprint-report**: Sprint summary with metrics
+        2. **generate-project-status-report**: Project health overview
+        3. **generate-user-performance-report**: Individual performance
+        4. **generate-executive-summary**: High-level org metrics
+        5. **export-tasks**: Export filtered tasks (CSV, JSON)
+    MARKDOWN;
+
+    protected array $tools = [
+        \App\Mcp\Tools\GenerateSprintReport::class,
+        \App\Mcp\Tools\GenerateProjectStatusReport::class,
+        \App\Mcp\Tools\GenerateUserPerformanceReport::class,
+        \App\Mcp\Tools\GenerateExecutiveSummary::class,
+        \App\Mcp\Tools\ExportTasks::class,
+    ];
+}
+```
+
+### Análisis Línea por Línea
+
+**Líneas 9-10**: `name` y `version`
+- **¿Qué hace?**: Identifica el servidor como "Reports v1.0.0"
+- **¿Por qué?**: Los clientes MCP usan este nombre para conectarse
+
+**Líneas 12-26**: `$instructions`
+- **¿Qué hace?**: Proporciona documentación a Claude sobre cómo usar el servidor
+- **¿Por qué?**: Claude lee estas instrucciones para entender qué herramientas tiene disponibles
+- **Formato**: Markdown para legibilidad
+
+**Líneas 28-34**: `$tools`
+- **¿Qué hace?**: Registra las 5 herramientas del servidor
+- **¿Por qué?**: Laravel MCP carga automáticamente cada Tool y expone su funcionalidad
+- **Pattern**: Array de class-strings con type hints
+
+## 12.4 GenerateSprintReport - Reporte de Sprint Completo
+
+Este es el tool más complejo del servidor (archivo: `app/Mcp/Tools/GenerateSprintReport.php`: 263 líneas). Genera un reporte detallado de un sprint con métricas de equipo, velocidad, y blockers.
+
+### Código Simplificado - Parte 1: Setup y Recopilación
+
+```php
+<?php
+
+namespace App\Mcp\Tools;
+
+use App\Domain\Analytics\Services\MetricsCollector;
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use Carbon\Carbon;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
+use Laravel\Mcp\Server\Tool;
+
+class GenerateSprintReport extends Tool
+{
+    protected string $description = 'Generate comprehensive sprint report';
+
+    public function __construct(
+        private readonly MetricsCollector $metricsCollector,
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {
+    }
+
+    public function handle(Request $request): Response
+    {
+        // 1. Extraer parámetros de entrada
+        $startDate = Carbon::parse($request->input('start_date'));
+        $endDate = Carbon::parse($request->input('end_date'));
+        $projectId = $request->input('project_id', null);
+        $format = $request->input('format', 'json');
+
+        // 2. Recopilar métricas del período
+        $metrics = $this->metricsCollector->collectMetrics(
+            $startDate,
+            $endDate
+        );
+
+        // 3. Obtener tareas del sprint
+        $sprintTasks = $projectId
+            ? $this->taskRepository->findByProject($projectId)
+            : $this->taskRepository->all();
+
+        // 4. Filtrar tareas creadas en el período del sprint
+        $sprintTasks = $sprintTasks->filter(function ($task) use ($startDate, $endDate) {
+            return $task->created_at >= $startDate
+                && $task->created_at <= $endDate;
+        });
+        
+        // Continúa...
+    }
+}
+```
+
+**Análisis de Recopilación de Datos:**
+
+**Líneas 25-28**: **Extracción de parámetros**
+- `Carbon::parse()`: Convierte strings "2025-03-01" a objetos Carbon para cálculos
+- `$request->input('project_id', null)`: Parámetro opcional con default `null`
+- `$format`: Default "json", puede ser "markdown" o "html"
+
+**Líneas 31-34**: **Recopilar métricas**
+- `MetricsCollector::collectMetrics()`: Servicio del Domain Analytics
+- Recopila métricas generales del período (velocidad histórica, promedios)
+
+**Líneas 37-39**: **Obtener tareas**
+- **Con filtro**: `findByProject($projectId)` → Solo tareas de ese proyecto
+- **Sin filtro**: `all()` → Todas las tareas de la organización
+- **Pattern**: Ternary operator para elegir query
+
+**Líneas 42-45**: **Filtrar por fechas**
+- `filter()`: Método de Laravel Collections
+- `use ($startDate, $endDate)`: Closure con variables del scope externo
+- Solo incluye tareas **creadas** durante el sprint
+
+### Código Simplificado - Parte 2: Cálculo de Métricas
+
+```php
+// 5. Calcular métricas del sprint
+$totalTasks = $sprintTasks->count();
+$completedTasks = $sprintTasks->where('status', 'completed')->count();
+$completionRate = $totalTasks > 0
+    ? round(($completedTasks / $totalTasks) * 100, 1)
+    : 0;
+
+// 6. Calcular velocidad (tasks/day)
+$days = $startDate->diffInDays($endDate);
+$velocity = $days > 0
+    ? round($completedTasks / $days, 2)
+    : 0;
+
+// 7. Status breakdown
+$statusBreakdown = [
+    'completed' => $completedTasks,
+    'in_progress' => $sprintTasks->where('status', 'in_progress')->count(),
+    'review' => $sprintTasks->where('status', 'review')->count(),
+    'pending' => $sprintTasks->where('status', 'pending')->count(),
+    'blocked' => $sprintTasks->where('status', 'blocked')->count(),
+];
+
+// 8. Identificar tareas bloqueadas
+$blockedTasks = $sprintTasks->filter(function ($task) {
+    return $task->status === 'blocked';
+})->map(function ($task) {
+    return [
+        'id' => $task->id,
+        'title' => $task->title,
+        'priority' => $task->priority->value,
+        'assignee' => $task->assignedTo->name ?? 'Unassigned',
+    ];
+})->values();
+
+// 9. Performance por miembro del equipo
+$teamPerformance = $sprintTasks->groupBy('assigned_to')
+    ->map(function ($tasks, $userId) {
+        $user = $userId ? $tasks->first()->assignedTo : null;
+        return [
+            'name' => $user->name ?? 'Unassigned',
+            'total_tasks' => $tasks->count(),
+            'completed' => $tasks->where('status', 'completed')->count(),
+            'completion_rate' => $tasks->count() > 0
+                ? round(($tasks->where('status', 'completed')->count() / $tasks->count()) * 100, 1).'%'
+                : '0%',
+        ];
+    })->values();
+```
+
+**Análisis Detallado:**
+
+**Completion Rate (Líneas 52-55):**
+```php
+$completionRate = $totalTasks > 0
+    ? round(($completedTasks / $totalTasks) * 100, 1)
+    : 0;
+```
+- **Fórmula**: `(completadas / totales) * 100`
+- **Ejemplo**: 45 completadas / 52 totales = 86.5%
+- **Guard**: `$totalTasks > 0` previene división por cero
+- **Redondeo**: `round(..., 1)` → un decimal (86.5)
+
+**Velocity (Líneas 58-61):**
+```php
+$days = $startDate->diffInDays($endDate);
+$velocity = $days > 0
+    ? round($completedTasks / $days, 2)
+    : 0;
+```
+- **Fórmula**: `tareas completadas / días del sprint`
+- **Ejemplo**: 45 completadas / 14 días = 3.2 tasks/day
+- **Uso**: Planificar sprints futuros ("nuestro velocity es ~3 tasks/day, entonces en 10 días podemos hacer 30 tareas")
+- **Guard**: `$days > 0` previene división por cero
+
+**Team Performance (Líneas 84-95):**
+```php
+$teamPerformance = $sprintTasks->groupBy('assigned_to')
+    ->map(function ($tasks, $userId) {
+        // Calcular métricas por usuario
+    })->values();
+```
+- **`groupBy('assigned_to')`**: Agrupa tareas por usuario
+  - Resultado: `[user_id => Collection<Task>]`
+- **`map()`**: Transforma cada grupo en métricas
+- **`values()`**: Resetea índices para array limpio `[0, 1, 2...]`
+
+**Resultado de ejemplo:**
+```json
+[
+  {
+    "name": "Alice Johnson",
+    "total_tasks": 12,
+    "completed": 10,
+    "completion_rate": "83.3%"
+  },
+  {
+    "name": "Bob Smith",
+    "total_tasks": 8,
+    "completed": 8,
+    "completion_rate": "100%"
+  }
+]
+```
+
+### Código Simplificado - Parte 3: Formateo
+
+```php
+// 10. Construir estructura del reporte
+$reportData = [
+    'report_type' => 'sprint_report',
+    'generated_at' => Carbon::now()->toDateTimeString(),
+    'sprint_period' => [
+        'start_date' => $startDate->toDateString(),
+        'end_date' => $endDate->toDateString(),
+        'duration_days' => $days,
+    ],
+    'summary' => [
+        'total_tasks' => $totalTasks,
+        'completed_tasks' => $completedTasks,
+        'completion_rate' => $completionRate.'%',
+        'velocity' => $velocity.' tasks/day',
+    ],
+    'status_breakdown' => $statusBreakdown,
+    'team_performance' => $teamPerformance,
+    'blockers' => [
+        'count' => $blockedTasks->count(),
+        'tasks' => $blockedTasks,
+    ],
+];
+
+// 11. Formatear según formato solicitado
+$output = match ($format) {
+    'markdown' => $this->formatAsMarkdown($reportData),
+    'html' => $this->formatAsHtml($reportData),
+    default => json_encode($reportData, JSON_PRETTY_PRINT),
+};
+
+// 12. Retornar respuesta
+return Response::json([
+    'success' => true,
+    'format' => $format,
+    'report' => $format === 'json' ? $reportData : null,
+    'content' => $format !== 'json' ? $output : null,
+]);
+```
+
+**Análisis:**
+
+**Match Expression (Líneas 122-126):**
+```php
+$output = match ($format) {
+    'markdown' => $this->formatAsMarkdown($reportData),
+    'html' => $this->formatAsHtml($reportData),
+    default => json_encode($reportData, JSON_PRETTY_PRINT),
+};
+```
+- **PHP 8.0 Match**: Más estricto que `switch`, retorna valor
+- **Formatters personalizados**: Métodos privados que transforman array a string
+- **Default**: Si format es "json" u otro valor, retorna JSON
+
+**Response Condicional (Líneas 130-134):**
+```php
+return Response::json([
+    'success' => true,
+    'format' => $format,
+    'report' => $format === 'json' ? $reportData : null,
+    'content' => $format !== 'json' ? $output : null,
+]);
+```
+- **Si JSON**: `report` contiene el array, `content` es `null`
+- **Si Markdown/HTML**: `report` es `null`, `content` contiene el string formateado
+- **¿Por qué?**: JSON ya está estructurado, pero Markdown/HTML son strings
+
+### Método formatAsMarkdown()
+
+```php
+private function formatAsMarkdown(array $data): string
+{
+    $md = "# Sprint Report\n\n";
+    $md .= "**Generated:** {$data['generated_at']}\n\n";
+
+    $md .= "## Sprint Period\n\n";
+    $md .= "- Start: {$data['sprint_period']['start_date']}\n";
+    $md .= "- End: {$data['sprint_period']['end_date']}\n";
+    $md .= "- Duration: {$data['sprint_period']['duration_days']} days\n\n";
+
+    $md .= "## Summary\n\n";
+    $md .= "- Total Tasks: {$data['summary']['total_tasks']}\n";
+    $md .= "- Completed: {$data['summary']['completed_tasks']}\n";
+    $md .= "- Completion Rate: {$data['summary']['completion_rate']}\n";
+    $md .= "- Velocity: {$data['summary']['velocity']}\n\n";
+
+    $md .= "## Status Breakdown\n\n";
+    foreach ($data['status_breakdown'] as $status => $count) {
+        $md .= "- ".ucfirst($status).": {$count}\n";
+    }
+
+    $md .= "\n## Team Performance\n\n";
+    foreach ($data['team_performance'] as $member) {
+        $md .= "### {$member['name']}\n";
+        $md .= "- Total Tasks: {$member['total_tasks']}\n";
+        $md .= "- Completed: {$member['completed']}\n";
+        $md .= "- Completion Rate: {$member['completion_rate']}\n\n";
+    }
+
+    if ($data['blockers']['count'] > 0) {
+        $md .= "## Blockers ({$data['blockers']['count']})\n\n";
+        foreach ($data['blockers']['tasks'] as $blocker) {
+            $md .= "- [{$blocker['priority']}] {$blocker['title']} ";
+            $md .= "(#{$blocker['id']}) - {$blocker['assignee']}\n";
+        }
+    }
+
+    return $md;
+}
+```
+
+**Ejemplo de salida:**
+
+```markdown
+# Sprint Report
+
+**Generated:** 2025-03-16 14:30:00
+
+## Sprint Period
+
+- Start: 2025-03-01
+- End: 2025-03-15
+- Duration: 14 days
+
+## Summary
+
+- Total Tasks: 52
+- Completed: 45
+- Completion Rate: 86.5%
+- Velocity: 3.2 tasks/day
+
+## Status Breakdown
+
+- Completed: 45
+- In_progress: 5
+- Review: 2
+- Pending: 0
+- Blocked: 0
+
+## Team Performance
+
+### Alice Johnson
+- Total Tasks: 12
+- Completed: 10
+- Completion Rate: 83.3%
+
+### Bob Smith
+- Total Tasks: 8
+- Completed: 8
+- Completion Rate: 100%
+```
+
+## 12.5 GenerateProjectStatusReport - Estado del Proyecto
+
+Este tool (archivo: `app/Mcp/Tools/GenerateProjectStatusReport.php`: 122 líneas) genera un reporte del **estado de salud** de un proyecto específico con métricas de riesgo.
+
+### Código Clave - Health Score Algorithm
+
+```php
+<?php
+
+namespace App\Mcp\Tools;
+
+class GenerateProjectStatusReport extends Tool
+{
+    public function handle(Request $request): Response
+    {
+        $projectId = $request->input('project_id');
+        $project = $this->projectRepository->findById($projectId);
+
+        if (!$project) {
+            return Response::json([
+                'success' => false,
+                'error' => "Project #{$projectId} not found",
+            ]);
+        }
+
+        $tasks = $this->taskRepository->findByProject($projectId);
+        $totalTasks = $tasks->count();
+        $completedTasks = $tasks->where('status', 'completed')->count();
+        $completionRate = $totalTasks > 0
+            ? round(($completedTasks / $totalTasks) * 100, 1)
+            : 0;
+
+        // HEALTH SCORE CALCULATION
+        $overdueTasks = $tasks->filter(fn ($t) => $t->isOverdue())->count();
+        $blockedTasks = $tasks->where('status', 'blocked')->count();
+
+        // Fórmula: Empieza en 100, resta penalties
+        $healthScore = max(0,
+            100
+            - ($overdueTasks * 5)       // -5 puntos por cada overdue
+            - ($blockedTasks * 10)      // -10 puntos por cada blocked
+            - ((100 - $completionRate) * 0.5)  // -0.5 por cada % no completado
+        );
+
+        $reportData = [
+            'health' => [
+                'score' => round($healthScore, 1),
+                'status' => $healthScore >= 80 ? 'healthy'
+                    : ($healthScore >= 60 ? 'at_risk' : 'critical'),
+            ],
+            'completion' => [
+                'total_tasks' => $totalTasks,
+                'completed' => $completedTasks,
+                'rate' => $completionRate.'%',
+            ],
+            'risks' => [
+                'overdue_tasks' => $overdueTasks,
+                'blocked_tasks' => $blockedTasks,
+            ],
+        ];
+
+        return Response::json([
+            'success' => true,
+            'report' => $reportData,
+        ]);
+    }
+}
+```
+
+### Análisis: Health Score Algorithm
+
+**Fórmula del Health Score (Líneas 30-35):**
+
+```php
+$healthScore = max(0,
+    100
+    - ($overdueTasks * 5)
+    - ($blockedTasks * 10)
+    - ((100 - $completionRate) * 0.5)
+);
+```
+
+**Desglose de penalties:**
+
+1. **Empieza en 100**: Proyecto perfecto
+2. **-5 puntos por cada tarea overdue**: 
+   - Deadline incumplido es señal de problemas
+   - 3 overdue = -15 puntos
+3. **-10 puntos por cada tarea bloqueada**: 
+   - Blockers detienen el progreso
+   - Más crítico que overdue
+   - 2 blocked = -20 puntos
+4. **-0.5 por cada % NO completado**:
+   - Proyecto al 70% completo = 30% pendiente
+   - 30 * 0.5 = -15 puntos
+
+**Ejemplo de cálculo:**
+
+```
+Proyecto "Mobile App Redesign":
+- 3 tareas overdue
+- 2 tareas bloqueadas
+- 70% de completion rate
+
+Health Score = 100 - (3 * 5) - (2 * 10) - ((100 - 70) * 0.5)
+             = 100 - 15 - 20 - (30 * 0.5)
+             = 100 - 15 - 20 - 15
+             = 50 (at_risk)
+```
+
+**Clasificación de salud (Líneas 39-41):**
+
+```php
+'status' => $healthScore >= 80 ? 'healthy'
+    : ($healthScore >= 60 ? 'at_risk' : 'critical')
+```
+
+| **Score** | **Status** | **Color** | **Acción Requerida** |
+|-----------|------------|-----------|----------------------|
+| 80-100 | `healthy` | Verde ✅ | Mantener curso |
+| 60-79 | `at_risk` | Amarillo ⚠️ | Monitorear de cerca |
+| 0-59 | `critical` | Rojo ❌ | Intervención urgente |
+
+## 12.6 ExportTasks - Exportación Flexible de Datos
+
+Este tool (archivo: `app/Mcp/Tools/ExportTasks.php`: 115 líneas) permite **exportar tareas con filtros** en formatos CSV o JSON para análisis externo.
+
+### Código Completo
+
+```php
+<?php
+
+namespace App\Mcp\Tools;
+
+class ExportTasks extends Tool
+{
+    protected string $description = 'Export filtered tasks to CSV or JSON';
+
+    public function handle(Request $request): Response
+    {
+        // 1. Extraer parámetros de filtrado
+        $format = $request->input('format', 'json');
+        $projectId = $request->input('project_id', null);
+        $status = $request->input('status', null);
+        $priority = $request->input('priority', null);
+        $assigneeId = $request->input('assignee_id', null);
+
+        // 2. Obtener todas las tareas
+        $tasks = $this->taskRepository->all();
+
+        // 3. Aplicar filtros dinámicamente
+        if ($projectId) {
+            $tasks = $tasks->where('project_id', $projectId);
+        }
+        if ($status) {
+            $tasks = $tasks->where('status', $status);
+        }
+        if ($priority) {
+            $tasks = $tasks->where('priority', $priority);
+        }
+        if ($assigneeId) {
+            $tasks = $tasks->where('assigned_to', $assigneeId);
+        }
+
+        // 4. Mapear a formato de exportación
+        $exportData = $tasks->map(function ($task) {
+            return [
+                'id' => $task->id,
+                'title' => $task->title,
+                'status' => $task->status->value,
+                'priority' => $task->priority->value,
+                'project' => $task->project->name ?? 'No Project',
+                'assignee' => $task->assignedTo->name ?? 'Unassigned',
+                'due_date' => $task->due_date?->toDateString() ?? 'Not set',
+                'created_at' => $task->created_at->toDateString(),
+            ];
+        })->values();
+
+        // 5. Formatear según formato solicitado
+        $output = match ($format) {
+            'csv' => $this->formatAsCsv($exportData->toArray()),
+            'json' => json_encode($exportData, JSON_PRETTY_PRINT),
+            default => json_encode($exportData, JSON_PRETTY_PRINT),
+        };
+
+        return Response::json([
+            'success' => true,
+            'format' => $format,
+            'count' => $exportData->count(),
+            'filters_applied' => array_filter([
+                'project_id' => $projectId,
+                'status' => $status,
+                'priority' => $priority,
+                'assignee_id' => $assigneeId,
+            ]),
+            'content' => $output,
+        ]);
+    }
+
+    private function formatAsCsv(array $data): string
+    {
+        if (empty($data)) {
+            return '';
+        }
+
+        // Header row: id,title,status,...
+        $csv = implode(',', array_keys($data[0]))."\n";
+
+        // Data rows
+        foreach ($data as $row) {
+            $csv .= implode(',', array_map(function ($value) {
+                // Escape double quotes: "Hello" -> "Hello"
+                return '"'.str_replace('"', '""', $value).'"';
+            }, $row))."\n";
+        }
+
+        return $csv;
+    }
+
+    public function schema(JsonSchema $schema): array
+    {
+        return [
+            'format' => $schema->string()
+                ->enum(['json', 'csv'])
+                ->default('json')
+                ->optional(),
+            'project_id' => $schema->integer()->optional(),
+            'status' => $schema->string()
+                ->enum(['pending', 'in_progress', 'review', 'completed', 'blocked'])
+                ->optional(),
+            'priority' => $schema->string()
+                ->enum(['low', 'medium', 'high', 'critical'])
+                ->optional(),
+            'assignee_id' => $schema->integer()->optional(),
+        ];
+    }
+}
+```
+
+### Análisis: Filtrado Dinámico (Líneas 21-33)
+
+```php
+$tasks = $this->taskRepository->all();
+
+if ($projectId) {
+    $tasks = $tasks->where('project_id', $projectId);
+}
+if ($status) {
+    $tasks = $tasks->where('status', $status);
+}
+if ($priority) {
+    $tasks = $tasks->where('priority', $priority);
+}
+if ($assigneeId) {
+    $tasks = $tasks->where('assigned_to', $assigneeId);
+}
+```
+
+**¿Qué hace?**
+- **Filtrado encadenado**: Cada filtro es opcional e independiente
+- **Laravel Collections**: `where()` funciona sobre collections, no queries
+- **Flexibilidad total**: Puedes combinar 0, 1, 2, 3, o 4 filtros
+
+**Ejemplos de uso:**
+
+```
+// Exportar TODAS las tareas
+ExportTasks(format: 'csv')
+
+// Solo tareas de proyecto #5
+ExportTasks(project_id: 5, format: 'csv')
+
+// Tareas HIGH priority que están BLOCKED
+ExportTasks(priority: 'high', status: 'blocked', format: 'json')
+
+// Tareas asignadas a Alice (user_id: 3) en proyecto #5
+ExportTasks(project_id: 5, assignee_id: 3, format: 'csv')
+```
+
+### Análisis: Formateo CSV (Líneas 69-84)
+
+```php
+private function formatAsCsv(array $data): string
+{
+    if (empty($data)) {
+        return '';
+    }
+
+    // Header row: id,title,status,...
+    $csv = implode(',', array_keys($data[0]))."\n";
+
+    // Data rows
+    foreach ($data as $row) {
+        $csv .= implode(',', array_map(function ($value) {
+            // Escape double quotes: "Hello" -> "Hello"
+            return '"'.str_replace('"', '""', $value).'"';
+        }, $row))."\n";
+    }
+
+    return $csv;
+}
+```
+
+**¿Por qué escapar comillas?**
+
+CSV tiene un problema: si un valor contiene comillas o comas, puede romper el formato.
+
+**Problema sin escapar:**
+```csv
+id,title,description
+1,Fix "bug" in login,Description here
+```
+Esto rompe el parser porque las comillas internas no están escapadas.
+
+**Correctamente escapado:**
+```csv
+id,title,description
+"1","Fix ""bug"" in login","Description here"
+```
+- **Comillas dobles `""`**: Representan una comilla literal dentro del valor
+- **Todo el valor entre comillas**: Permite usar comas en los valores
+
+**Ejemplo de salida CSV:**
+
+```csv
+id,title,status,priority,project,assignee,due_date,created_at
+"1","Implement authentication","completed","high","TaskMaster Pro","Alice Johnson","2025-03-15","2025-03-01"
+"2","Fix header bug","in_progress","medium","TaskMaster Pro","Charlie Brown","2025-03-20","2025-03-05"
+"3","Add dark mode","pending","low","TaskMaster Pro","Unassigned","Not set","2025-03-10"
+```
+
+## 12.7 Uso Práctico de los Reports
+
+### Caso de Uso 1: Sprint Retrospective
+
+**Escenario**: El equipo Scrum termina el sprint del 1-15 de marzo y necesita hacer una retrospectiva.
+
+**Conversación con Claude:**
+
+```
+Usuario: "Genera un reporte del sprint del 1 al 15 de marzo en formato markdown"
+
+Claude: [Llama a generate-sprint-report con:]
+{
+  "start_date": "2025-03-01",
+  "end_date": "2025-03-15",
+  "format": "markdown"
+}
+
+[Recibe y muestra el reporte formateado:]
+
+# Sprint Report
+
+**Generated:** 2025-03-16 10:30:00
+
+## Summary
+- Total Tasks: 52
+- Completed: 45
+- Completion Rate: 86.5%
+- Velocity: 3.2 tasks/day
+
+## Team Performance
+
+### Alice Johnson
+- Total Tasks: 12
+- Completed: 10
+- Completion Rate: 83.3%
+
+### Bob Smith
+- Total Tasks: 8
+- Completed: 8
+- Completion Rate: 100%
+
+## Blockers (2)
+- [high] Database migration issue (#34) - Charlie Brown
+- [medium] Third-party API timeout (#41) - Alice Johnson
+```
+
+**Valor para el equipo:**
+- **Datos objetivos**: No hay debate sobre "¿cuánto hicimos?"
+- **Identificación de blockers**: Claro qué necesita atención
+- **Comparación de performance**: Equilibrar carga de trabajo
+
+### Caso de Uso 2: Executive Status Update
+
+**Escenario**: El CEO necesita un resumen rápido del estado del proyecto #3 antes de una reunión con stakeholders.
+
+**Conversación:**
+
+```
+Usuario: "¿Cuál es el estado del proyecto #3?"
+
+Claude: [Llama a generate-project-status-report:]
+{
+  "project_id": 3,
+  "format": "json"
+}
+
+[Analiza datos JSON y responde:]
+
+"El proyecto 'Mobile App Redesign' tiene un health score de 72 (at_risk).
+
+Riesgos identificados:
+- 5 tareas overdue
+- 2 tareas blocked
+- 3 tareas de alta prioridad pendientes
+
+El proyecto está al 68% de completitud (34/50 tareas).
+Hay una variación de +12 horas respecto al estimado inicial."
+
+Usuario: "Exporta las tareas bloqueadas a CSV para revisarlas con el equipo"
+
+Claude: [Llama a export-tasks:]
+{
+  "project_id": 3,
+  "status": "blocked",
+  "format": "csv"
+}
+
+[Genera archivo CSV con las 2 tareas bloqueadas para que el usuario
+lo abra en Excel y lo discuta en la reunión]
+```
+
+**Valor para el ejecutivo:**
+- **Snapshot rápido**: Health score de 72 dice todo
+- **Accionable**: Identifica exactamente qué necesita intervención
+- **Documentado**: CSV para compartir con el equipo
+
+### Caso de Uso 3: Performance Review
+
+**Escenario**: Manager de ingeniería necesita datos para la revisión de performance anual de Alice Johnson (user_id: 7).
+
+**Conversación:**
+
+```
+Usuario: "Necesito las métricas de Alice Johnson del último mes para su review"
+
+Claude: "Voy a generar un reporte del último mes y filtrar sus tareas."
+
+[Llama a generate-sprint-report con fechas del último mes]
+[Extrae métricas de Alice del team_performance]
+
+"Alice Johnson completó 42 de 48 tareas asignadas el último mes (87.5% completion rate).
+
+Métricas destacadas:
+- Velocity personal: 3.0 tasks/day
+- Total de tareas: 48 (10% más que el promedio del equipo)
+- Solo 1 tarea bloqueada (2% de su workload)
+
+Comparado con el equipo:
+- Velocity promedio del equipo: 2.5 tasks/day
+- Alice está 20% por encima del promedio"
+
+Usuario: "Exporta todas sus tareas del mes a CSV para revisarlas juntos"
+
+Claude: [Llama a export-tasks:]
+{
+  "assignee_id": 7,
+  "format": "csv"
+}
+
+[Genera CSV con las 48 tareas de Alice del mes, incluyendo títulos,
+prioridades, fechas, para discutir en detalle durante la reunión 1-on-1]
+```
+
+**Valor para el manager:**
+- **Datos objetivos**: Métricas concretas, no opiniones
+- **Contexto**: Comparación con el promedio del equipo
+- **Detalles**: CSV para revisar tarea por tarea
+
+## 12.8 Comparación: Diferentes Enfoques para Obtener Datos
+
+### Enfoque 1: MCP Resources (AnalyticsResourcesServer)
+
+```
+Usuario: "Muéstrame las métricas actuales del equipo"
+
+Claude: [Lee resource team-metrics (capítulo 9)]
+→ Datos en tiempo real
+→ Respuesta instantánea (< 1 segundo)
+→ Formato JSON estructurado
+→ NO personalizable (formato fijo)
+→ Sin períodos históricos
+```
+
+**Cuándo usar:**
+- ✅ Consultas rápidas: "¿Cómo vamos hoy?"
+- ✅ Datos actuales: Snapshot del estado actual
+- ✅ Integración programática: APIs que consumen JSON
+- ✅ Dashboards en tiempo real
+
+### Enfoque 2: MCP Tools de Reportes (ReportsServer)
+
+```
+Usuario: "Genera un reporte del sprint del 1-15 de marzo"
+
+Claude: [Ejecuta generate-sprint-report]
+→ Período específico (histórico)
+→ Múltiples formatos (markdown, HTML, JSON)
+→ Análisis calculado (velocity, health score, trends)
+→ Documento completo formateado
+→ Toma más tiempo (varios segundos)
+```
+
+**Cuándo usar:**
+- ✅ Análisis histórico: "¿Cómo fue el último sprint?"
+- ✅ Presentaciones: Markdown para GitHub, HTML para web
+- ✅ Documentación formal: Reportes guardados para referencia
+- ✅ Reportes ejecutivos: Health scores, recomendaciones
+
+### Enfoque 3: Exportación (ExportTasks)
+
+```
+Usuario: "Exporta tareas HIGH priority que están BLOCKED a CSV"
+
+Claude: [Ejecuta export-tasks]
+→ Filtrado preciso y flexible
+→ Formato para Excel/Google Sheets
+→ Datos sin procesar (raw data)
+→ Para análisis externo
+```
+
+**Cuándo usar:**
+- ✅ Análisis en Excel/Google Sheets: Pivot tables, gráficos
+- ✅ Importación a otras herramientas: Jira, Trello, Asana
+- ✅ Backup de datos: Exportaciones periódicas
+- ✅ Procesamiento masivo: Scripts externos
+
+### Tabla Comparativa
+
+| **Aspecto** | **Resources** | **Reports Tools** | **Export** |
+|-------------|---------------|-------------------|------------|
+| **Tipo MCP** | Resource (read) | Tool (write) | Tool (write) |
+| **Velocidad** | Instantáneo | Varios segundos | Rápido |
+| **Formatos** | Solo JSON | JSON/Markdown/HTML | JSON/CSV |
+| **Períodos** | Solo actual | Cualquier rango | Filtrado flexible |
+| **Análisis** | Métricas básicas | Análisis avanzado | Datos raw |
+| **Uso típico** | Dashboard | Retrospectivas | Excel analysis |
+
+## 12.9 Resumen del Capítulo
+
+**Conceptos Clave Aprendidos:**
+
+1. **ReportsServer**: Servidor MCP especializado en generación de reportes completos
+2. **Diferencia Tools vs Resources**: 
+   - Resources = Lectura de datos en tiempo real
+   - Tools = Generación activa de documentos formateados
+3. **Multi-formato**: 
+   - JSON (programático, APIs)
+   - Markdown (documentación, GitHub)
+   - HTML (web, presentaciones)
+   - CSV (Excel, análisis externo)
+4. **Métricas avanzadas**:
+   - **Health scores**: Algoritmo que penaliza overdue y blockers
+   - **Velocity**: Tasks completadas por día para planificación
+   - **Team performance**: Métricas individuales y comparativas
+5. **Filtrado dinámico**: Exportaciones con múltiples filtros opcionales combinables
+
+**Los 5 Tools del ReportsServer:**
+
+| **Tool** | **Propósito** | **Output** | **Archivo** |
+|----------|---------------|------------|-------------|
+| `GenerateSprintReport` | Reporte completo de sprint con métricas de equipo | JSON/Markdown/HTML | `GenerateSprintReport.php` (263 líneas) |
+| `GenerateProjectStatusReport` | Estado de salud de un proyecto específico | JSON/Markdown | `GenerateProjectStatusReport.php` (122 líneas) |
+| `GenerateUserPerformanceReport` | Performance individual de un usuario | JSON/Markdown | `GenerateUserPerformanceReport.php` |
+| `GenerateExecutiveSummary` | Vista panorámica organizacional | JSON/Markdown | `GenerateExecutiveSummary.php` |
+| `ExportTasks` | Exportación filtrada de tareas | JSON/CSV | `ExportTasks.php` (115 líneas) |
+
+**Archivos del Capítulo:**
+```
+app/Mcp/
+├── Servers/
+│   └── ReportsServer.php              → Registra 5 tools (111 líneas)
+└── Tools/
+    ├── GenerateSprintReport.php       → Sprint report (263 líneas)
+    ├── GenerateProjectStatusReport.php → Project status (122 líneas)
+    ├── GenerateUserPerformanceReport.php → User performance
+    ├── GenerateExecutiveSummary.php   → Executive summary
+    └── ExportTasks.php                → Task export (115 líneas)
+```
+
+**Fórmulas Importantes:**
+
+```php
+// Completion Rate
+$completionRate = round(($completedTasks / $totalTasks) * 100, 1);
+
+// Velocity
+$velocity = round($completedTasks / $days, 2);
+
+// Health Score
+$healthScore = max(0,
+    100
+    - ($overdueTasks * 5)
+    - ($blockedTasks * 10)
+    - ((100 - $completionRate) * 0.5)
+);
+```
+
+**Próximos Pasos:**
+
+En el siguiente capítulo exploraremos la **implementación de Repositories**, profundizando en cómo se conectan los Repositories Pattern con Eloquent y cómo optimizar las queries para mejor performance.
+
+---
+
+**Estado del Tutorial:** Capítulos 1-12 de 15 completados ✓
