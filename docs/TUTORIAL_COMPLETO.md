@@ -5856,3 +5856,1153 @@ En el Capítulo 6 exploraremos **Domain Services**, viendo cómo encapsular lóg
 ---
 
 **Estado del Tutorial:** Capítulos 1-5 de 15 completados ✓
+
+
+# Capítulo 6: Domain Services
+
+## 6.1 ¿Qué es un Domain Service?
+
+Un **Domain Service** es una clase que encapsula **lógica de negocio** que:
+
+1. **No pertenece a una entidad específica** - La lógica involucra múltiples entidades o agregados
+2. **No pertenece a un Value Object** - La lógica es más compleja que un simple cálculo
+3. **No pertenece a un Repository** - La lógica no es solo acceso a datos
+4. **Es parte del Domain Layer** - Es lógica de negocio pura, no infraestructura
+
+### 🔍 Analogía del Mundo Real
+
+Imagina una **tienda de computadoras**:
+
+```
+ENTIDADES (Entities):
+- Computadora → tiene marca, modelo, precio
+- Cliente → tiene nombre, dirección, historial
+
+VALUE OBJECTS:
+- Precio → tiene monto y moneda
+- Dirección → tiene calle, ciudad, código postal
+
+DOMAIN SERVICES:
+- CalculadorDePrecioFinal
+  ↳ Toma: Computadora + Cliente + Descuentos + Impuestos
+  ↳ Retorna: Precio final
+  ↳ Lógica: Aplica descuentos por cliente frecuente, calcula impuestos
+           según la región, aplica promociones vigentes...
+
+- GestorDeGarantias
+  ↳ Toma: Computadora + Cliente + Compra
+  ↳ Retorna: Garantía activa o no
+  ↳ Lógica: Valida fecha de compra, estado del producto, términos...
+```
+
+**¿Por qué no puede ser un método de Computadora?**
+- Porque involucra al Cliente (clientes frecuentes tienen descuento)
+- Porque involucra impuestos externos (región del cliente)
+- Porque involucra promociones (entidad separada)
+
+**¿Por qué no puede ser un método de Cliente?**
+- Porque involucra la Computadora (precio base)
+- Porque involucra promociones (no es responsabilidad del cliente)
+
+**Solución:** Un Domain Service coordina estas entidades con la lógica de negocio.
+
+### 📊 Cuándo Usar un Domain Service
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│           ¿DÓNDE PONER LA LÓGICA DE NEGOCIO?               │
+└─────────────────────────────────────────────────────────────┘
+
+❓ ¿La lógica solo usa datos de UNA entidad?
+   ✅ → Método en la ENTIDAD
+
+❓ ¿La lógica es un cálculo simple e inmutable?
+   ✅ → Método en un VALUE OBJECT
+
+❓ ¿La lógica solo lee/guarda datos sin transformación?
+   ✅ → Método en el REPOSITORY
+
+❓ ¿La lógica involucra MÚLTIPLES entidades/agregados?
+❓ ¿La lógica es COMPLEJA y tiene reglas de negocio?
+❓ ¿La lógica NO es responsabilidad de una sola entidad?
+   ✅ → DOMAIN SERVICE
+
+❓ ¿La lógica usa APIs externas, envía emails, etc.?
+   ❌ → APPLICATION SERVICE (no Domain)
+```
+
+## 6.2 Domain Services en Nuestro Proyecto
+
+En **TaskMaster AI** tenemos 8 Domain Services:
+
+```
+app/Domain/
+├── TaskManagement/Services/
+│   ├── TaskStatusManager.php           # Gestión de transiciones
+│   └── TaskPriorityCalculator.php      # Cálculo de prioridades
+├── AIIntegration/Services/
+│   ├── OpenAIService.php                # Integración con OpenAI
+│   ├── TaskDescriptionGenerator.php    # Generación de descripciones
+│   ├── PromptBuilder.php                # Construcción de prompts
+│   └── ProductivityAnalyzer.php         # Análisis de productividad
+└── Analytics/Services/
+    ├── MetricsCollector.php             # Recolección de métricas
+    └── ReportGenerator.php              # Generación de reportes
+```
+
+## 6.3 TaskStatusManager - Gestión de Transiciones
+
+### 6.3.1 ¿Por qué es un Domain Service?
+
+```php
+// ❌ OPCIÓN 1: Método en Task entity
+class Task
+{
+    public function transitionTo(Status $newStatus): bool
+    {
+        // Problema: Task necesita acceso al Repository para guardarse
+        // Problema: Mezcla lógica de negocio con persistencia
+    }
+}
+
+// ❌ OPCIÓN 2: Método en Status value object
+enum Status
+{
+    public function transitionTask(Task $task, Status $newStatus): bool
+    {
+        // Problema: Un Value Object no debería modificar entidades
+        // Problema: Viola el principio de responsabilidad única
+    }
+}
+
+// ✅ SOLUCIÓN: Domain Service
+class TaskStatusManager
+{
+    // Coordina: Task + Status + Repository
+    // Encapsula: Lógica de transición + validación
+    // Responsabilidad: Gestionar el ciclo de vida de tareas
+}
+```
+
+### 6.3.2 Código Completo Comentado
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Domain\TaskManagement\Services;
+
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use App\Domain\TaskManagement\ValueObjects\Status;
+use App\Infrastructure\Persistence\Eloquent\Models\Task;
+use InvalidArgumentException;
+
+/**
+ * TaskStatusManager
+ *
+ * DOMAIN SERVICE que encapsula la lógica de negocio para
+ * gestionar transiciones de estado en tareas.
+ *
+ * ¿Por qué es un Domain Service?
+ * - Coordina Task + Status + Repository
+ * - Aplica reglas de negocio (validación de transiciones)
+ * - No es responsabilidad de una sola entidad
+ */
+class TaskStatusManager
+{
+    public function __construct(
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {}
+
+    // ═══════════════════════════════════════════════════════════
+    // 🔄 TRANSICIÓN PRINCIPAL
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Transition a task to a new status.
+     *
+     * LÓGICA DE NEGOCIO:
+     * 1. Obtener el status actual de la tarea
+     * 2. Validar que la transición sea permitida
+     * 3. Si es válida, actualizar en el repository
+     * 4. Si no es válida, lanzar excepción
+     *
+     * @throws InvalidArgumentException If the transition is not allowed
+     */
+    public function transitionTo(Task $task, Status $newStatus): bool
+    {
+        $currentStatus = $task->status;
+
+        // Validación usando Value Object (Status::canTransitionTo)
+        if (!$currentStatus->canTransitionTo($newStatus)) {
+            throw new InvalidArgumentException(
+                "Cannot transition from {$currentStatus->value} to {$newStatus->value}"
+            );
+        }
+
+        // Persistencia usando Repository
+        return $this->taskRepository->updateStatus($task->id, $newStatus);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 🎯 MÉTODOS DE CONVENIENCIA
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Mark a task as in progress.
+     *
+     * Método de conveniencia que encapsula la intención de negocio.
+     */
+    public function markAsInProgress(Task $task): bool
+    {
+        return $this->transitionTo($task, Status::IN_PROGRESS);
+    }
+
+    /**
+     * Mark a task as completed.
+     */
+    public function markAsCompleted(Task $task): bool
+    {
+        return $this->transitionTo($task, Status::COMPLETED);
+    }
+
+    /**
+     * Mark a task as blocked.
+     */
+    public function markAsBlocked(Task $task): bool
+    {
+        return $this->transitionTo($task, Status::BLOCKED);
+    }
+
+    /**
+     * Mark a task as in review.
+     */
+    public function markAsReview(Task $task): bool
+    {
+        return $this->transitionTo($task, Status::REVIEW);
+    }
+
+    /**
+     * Reopen a task (move back to pending).
+     *
+     * Lógica de negocio: "Reabrir" significa volver a PENDING
+     */
+    public function reopen(Task $task): bool
+    {
+        return $this->transitionTo($task, Status::PENDING);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 📋 CONSULTAS DE NEGOCIO
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Get available transitions for a task's current status.
+     *
+     * @return array<Status>
+     */
+    public function getAvailableTransitions(Task $task): array
+    {
+        return $task->status->availableTransitions();
+    }
+
+    /**
+     * Check if a transition is valid for a task.
+     */
+    public function canTransition(Task $task, Status $newStatus): bool
+    {
+        return $task->status->canTransitionTo($newStatus);
+    }
+
+    /**
+     * Get the status label.
+     */
+    public function getStatusLabel(Status $status): string
+    {
+        return $status->label();
+    }
+
+    /**
+     * Get the status color for UI.
+     */
+    public function getStatusColor(Status $status): string
+    {
+        return $status->color();
+    }
+}
+```
+
+### 6.3.3 Uso en MCP Tools
+
+```php
+// app/MCP/Presentation/TaskTools/UpdateTaskStatus.php
+
+use App\Domain\TaskManagement\Services\TaskStatusManager;
+use App\Domain\TaskManagement\ValueObjects\Status;
+
+class UpdateTaskStatus
+{
+    public function __construct(
+        private TaskRepositoryInterface $repository,
+        private TaskStatusManager $statusManager  // ← Inyección del Domain Service
+    ) {}
+
+    public function handle(array $params): array
+    {
+        $task = $this->repository->findById($params['id']);
+
+        if (!$task) {
+            return ['success' => false, 'error' => 'Task not found'];
+        }
+
+        $newStatus = Status::from($params['status']);
+
+        try {
+            // Usa el Domain Service para aplicar lógica de negocio
+            $this->statusManager->transitionTo($task, $newStatus);
+
+            return [
+                'success' => true,
+                'message' => "Task status updated to {$newStatus->label()}",
+                'task' => $task->fresh()->toArray(),
+            ];
+        } catch (InvalidArgumentException $e) {
+            return [
+                'success' => false,
+                'error' => $e->getMessage(),
+                'available_transitions' => $this->statusManager
+                    ->getAvailableTransitions($task)
+                    ->map(fn($s) => $s->value),
+            ];
+        }
+    }
+}
+```
+
+## 6.4 TaskDescriptionGenerator - IA para Tareas
+
+### 6.4.1 ¿Por qué es un Domain Service?
+
+```php
+// Este Domain Service coordina:
+// 1. Task (entidad)
+// 2. OpenAIService (otro Domain Service)
+// 3. PromptBuilder (otro Domain Service)
+//
+// Lógica de negocio: "Generar descripciones técnicas de calidad"
+```
+
+### 6.4.2 Código Completo Comentado
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Domain\AIIntegration\Services;
+
+use App\Infrastructure\Persistence\Eloquent\Models\Task;
+
+/**
+ * TaskDescriptionGenerator
+ *
+ * DOMAIN SERVICE que encapsula la lógica de negocio para
+ * generar descripciones de tareas usando IA.
+ *
+ * ¿Por qué es un Domain Service?
+ * - Coordina Task + OpenAI + PromptBuilder
+ * - Aplica reglas de negocio (fallbacks, validaciones)
+ * - Encapsula conocimiento del dominio (qué hace una buena descripción)
+ */
+class TaskDescriptionGenerator
+{
+    public function __construct(
+        private readonly OpenAIService $openAIService,
+        private readonly PromptBuilder $promptBuilder
+    ) {}
+
+    // ═══════════════════════════════════════════════════════════
+    // 📝 GENERACIÓN DE DESCRIPCIONES
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Generate a detailed technical description for a task.
+     *
+     * LÓGICA DE NEGOCIO:
+     * 1. Verificar si OpenAI está disponible
+     * 2. Si no está, usar descripción fallback
+     * 3. Si está, construir prompt y generar con IA
+     */
+    public function generate(Task $task): string
+    {
+        // Regla de negocio: Siempre tener fallback
+        if (!$this->openAIService->isAvailable()) {
+            return $this->generateFallbackDescription($task);
+        }
+
+        // Usa PromptBuilder (otro Domain Service)
+        $prompt = $this->promptBuilder->buildTaskDescriptionPrompt($task);
+
+        // Usa OpenAIService con parámetros de negocio
+        return $this->openAIService->complete($prompt, [
+            'temperature' => 0.7,  // Creatividad moderada
+            'max_tokens' => 1000,   // Descripción detallada
+        ]);
+    }
+
+    /**
+     * Generate acceptance criteria for a task.
+     *
+     * LÓGICA DE NEGOCIO:
+     * - Criterios de aceptación deben ser específicos y medibles
+     * - Temperature más baja (0.6) para mayor precisión
+     */
+    public function generateAcceptanceCriteria(Task $task): string
+    {
+        if (!$this->openAIService->isAvailable()) {
+            return $this->generateFallbackCriteria($task);
+        }
+
+        $prompt = $this->promptBuilder->buildAcceptanceCriteriaPrompt($task);
+
+        return $this->openAIService->complete($prompt, [
+            'temperature' => 0.6,  // Menos creatividad, más precisión
+            'max_tokens' => 800,
+        ]);
+    }
+
+    /**
+     * Suggest subtasks for a complex task.
+     *
+     * LÓGICA DE NEGOCIO:
+     * - Tareas complejas se dividen en 3-7 subtareas
+     * - Retorna array estructurado (JSON)
+     */
+    public function suggestSubtasks(Task $task): array
+    {
+        if (!$this->openAIService->isAvailable()) {
+            return [];  // Sin fallback para esta feature
+        }
+
+        $prompt = $this->promptBuilder->buildSubtaskPrompt($task);
+
+        $response = $this->openAIService->generateJson(
+            "Return a JSON array with key 'subtasks' containing suggested subtasks. {$prompt}",
+            ['temperature' => 0.7]
+        );
+
+        return $response['subtasks'] ?? [];
+    }
+
+    /**
+     * Improve task title to be more descriptive.
+     *
+     * LÓGICA DE NEGOCIO:
+     * - Títulos claros, accionables, best practices
+     * - Temperature baja (0.5) para consistencia
+     * - Respuesta corta (100 tokens máx)
+     */
+    public function improveTitle(Task $task): string
+    {
+        if (!$this->openAIService->isAvailable()) {
+            return $task->title;  // Sin cambios si no hay IA
+        }
+
+        $systemMessage = 'You are a technical project manager. Improve task titles to be clear, actionable, and follow best practices.';
+        $userMessage = "Improve this task title: \"{$task->title}\"\n\nContext: {$task->description}\n\nReturn only the improved title, nothing else.";
+
+        return $this->openAIService->completeWithSystem($systemMessage, $userMessage, [
+            'temperature' => 0.5,   // Consistencia
+            'max_tokens' => 100,     // Solo el título
+        ]);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 🔄 FALLBACKS (Lógica de negocio de resiliencia)
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Generate a fallback description when AI is unavailable.
+     *
+     * REGLA DE NEGOCIO: Siempre proveer algo útil, nunca fallar
+     */
+    private function generateFallbackDescription(Task $task): string
+    {
+        return "Task: {$task->title}\n\n"
+            ."This task requires implementation and testing. "
+            .'Please refer to the project requirements and ensure all acceptance criteria are met.';
+    }
+
+    /**
+     * Generate fallback acceptance criteria.
+     */
+    private function generateFallbackCriteria(Task $task): string
+    {
+        return "- Task is completed as described\n"
+            ."- Code is tested and reviewed\n"
+            ."- Documentation is updated\n"
+            .'- No regressions introduced';
+    }
+}
+```
+
+### 6.4.3 Uso en MCP Tools
+
+```php
+// app/MCP/Presentation/AITools/GenerateTaskDescription.php
+
+use App\Domain\AIIntegration\Services\TaskDescriptionGenerator;
+
+class GenerateTaskDescription
+{
+    public function __construct(
+        private TaskRepositoryInterface $repository,
+        private TaskDescriptionGenerator $generator  // ← Domain Service
+    ) {}
+
+    public function handle(array $params): array
+    {
+        $task = $this->repository->findById($params['task_id']);
+
+        if (!$task) {
+            return ['success' => false, 'error' => 'Task not found'];
+        }
+
+        // El Domain Service encapsula toda la lógica
+        $description = $this->generator->generate($task);
+        $criteria = $this->generator->generateAcceptanceCriteria($task);
+        $subtasks = $this->generator->suggestSubtasks($task);
+
+        // Actualizar la tarea con los resultados
+        $this->repository->update($task->id, [
+            'description' => $description,
+            'acceptance_criteria' => $criteria,
+        ]);
+
+        return [
+            'success' => true,
+            'description' => $description,
+            'acceptance_criteria' => $criteria,
+            'suggested_subtasks' => $subtasks,
+        ];
+    }
+}
+```
+
+## 6.5 OpenAIService - Integración con IA
+
+### 6.5.1 Código Completo Comentado
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Domain\AIIntegration\Services;
+
+use OpenAI\Laravel\Facades\OpenAI;
+
+/**
+ * OpenAIService
+ *
+ * DOMAIN SERVICE que encapsula la integración con OpenAI.
+ *
+ * ¿Por qué es un Domain Service?
+ * - Encapsula conocimiento del dominio (parámetros, modelos)
+ * - Abstrae la API externa para el Domain Layer
+ * - Aplica configuraciones de negocio (temperaturas, tokens)
+ */
+class OpenAIService
+{
+    /**
+     * Generate a completion using OpenAI.
+     *
+     * LÓGICA DE NEGOCIO:
+     * - Modelo por defecto desde config
+     * - Parámetros sensatos (temperatura, max_tokens)
+     * - Manejo de errores con string vacío
+     */
+    public function complete(string $prompt, array $options = []): string
+    {
+        $defaultOptions = [
+            'model' => config('openai.default_model', 'gpt-4-turbo-preview'),
+            'messages' => [
+                ['role' => 'user', 'content' => $prompt],
+            ],
+            'max_tokens' => $options['max_tokens'] ?? 2000,
+            'temperature' => $options['temperature'] ?? 0.7,
+        ];
+
+        $response = OpenAI::chat()->create(array_merge($defaultOptions, $options));
+
+        return $response->choices[0]->message->content ?? '';
+    }
+
+    /**
+     * Generate a completion with a system message.
+     *
+     * LÓGICA DE NEGOCIO:
+     * - System message define el comportamiento del asistente
+     * - Útil para definir roles (project manager, developer, etc.)
+     */
+    public function completeWithSystem(string $systemMessage, string $userMessage, array $options = []): string
+    {
+        $messages = [
+            ['role' => 'system', 'content' => $systemMessage],
+            ['role' => 'user', 'content' => $userMessage],
+        ];
+
+        $defaultOptions = [
+            'model' => config('openai.default_model', 'gpt-4-turbo-preview'),
+            'messages' => $messages,
+            'max_tokens' => $options['max_tokens'] ?? 2000,
+            'temperature' => $options['temperature'] ?? 0.7,
+        ];
+
+        $response = OpenAI::chat()->create(array_merge($defaultOptions, $options));
+
+        return $response->choices[0]->message->content ?? '';
+    }
+
+    /**
+     * Generate structured JSON output.
+     *
+     * LÓGICA DE NEGOCIO:
+     * - Fuerza respuesta en formato JSON
+     * - Retorna array para fácil manipulación
+     * - Fallback a array vacío si falla el parsing
+     */
+    public function generateJson(string $prompt, array $options = []): array
+    {
+        $options['response_format'] = ['type' => 'json_object'];
+
+        $response = $this->complete($prompt, $options);
+
+        return json_decode($response, true) ?? [];
+    }
+
+    /**
+     * Count tokens in a text (approximate).
+     *
+     * LÓGICA DE NEGOCIO:
+     * - Aproximación: 1 token ≈ 4 caracteres
+     * - Útil para estimar costos antes de llamar a la API
+     */
+    public function estimateTokens(string $text): int
+    {
+        // Regla de negocio: Rough approximation
+        return (int) ceil(strlen($text) / 4);
+    }
+
+    /**
+     * Check if API is configured and available.
+     *
+     * LÓGICA DE NEGOCIO:
+     * - Verifica que haya API key configurada
+     * - Usado por otros services para decidir usar fallbacks
+     */
+    public function isAvailable(): bool
+    {
+        return !empty(config('openai.api_key'));
+    }
+}
+```
+
+## 6.6 PromptBuilder - Construcción de Prompts
+
+### 6.6.1 ¿Por qué es un Domain Service?
+
+```php
+// PromptBuilder encapsula CONOCIMIENTO DEL DOMINIO sobre:
+// 1. Cómo estructurar prompts efectivos
+// 2. Qué información incluir para cada tipo de tarea
+// 3. Formato y estructura de las respuestas esperadas
+//
+// No es un simple "string concatenator"
+// Es conocimiento experto sobre prompt engineering
+```
+
+### 6.6.2 Ejemplo: buildTaskDescriptionPrompt
+
+```php
+/**
+ * Build a prompt for generating task descriptions.
+ *
+ * CONOCIMIENTO DEL DOMINIO:
+ * - Una buena descripción incluye: overview, approach, challenges, outcome
+ * - Necesita contexto: proyecto, título, prioridad, descripción actual
+ * - Formato: markdown para mejor legibilidad
+ */
+public function buildTaskDescriptionPrompt(Task $task): string
+{
+    $project = $task->project;
+
+    return <<<PROMPT
+    You are a technical project manager. Generate a detailed technical description for the following task.
+
+    **Project:** {$project->name}
+    **Task Title:** {$task->title}
+    **Priority:** {$task->priority->value}
+    **Current Description:** {$task->description}
+
+    Generate a comprehensive technical description that includes:
+    1. Overview of what needs to be done
+    2. Technical approach or considerations
+    3. Potential challenges or dependencies
+    4. Expected outcome
+
+    Keep it concise but informative. Use markdown formatting.
+    PROMPT;
+}
+```
+
+## 6.7 Ventajas de los Domain Services
+
+### 1. **Encapsulación de Lógica Compleja**
+
+```php
+// ❌ SIN Domain Service: Lógica dispersa
+class UpdateTaskStatusTool
+{
+    public function handle(array $params)
+    {
+        $task = Task::find($params['id']);
+        $newStatus = Status::from($params['status']);
+
+        // Lógica duplicada en múltiples Tools
+        if ($task->status === Status::PENDING && $newStatus === Status::COMPLETED) {
+            throw new Exception("Cannot complete without working");
+        }
+        if ($task->status === Status::COMPLETED && $newStatus === Status::PENDING) {
+            throw new Exception("Cannot reopen completed task");
+        }
+        // ...más validaciones
+
+        $task->update(['status' => $newStatus]);
+    }
+}
+
+// ✅ CON Domain Service: Lógica centralizada
+class UpdateTaskStatusTool
+{
+    public function handle(array $params)
+    {
+        $task = $this->repository->findById($params['id']);
+        $newStatus = Status::from($params['status']);
+
+        // Una línea - toda la lógica encapsulada
+        $this->statusManager->transitionTo($task, $newStatus);
+    }
+}
+```
+
+### 2. **Reutilización**
+
+```php
+// El mismo Domain Service se usa en:
+
+// 1. MCP Tools
+$this->statusManager->markAsCompleted($task);
+
+// 2. Controladores HTTP
+$this->statusManager->markAsInProgress($task);
+
+// 3. Livewire Components
+$this->statusManager->markAsBlocked($task);
+
+// 4. Jobs en Cola
+$this->statusManager->markAsReview($task);
+
+// 5. Tests
+$this->statusManager->transitionTo($task, Status::COMPLETED);
+
+// ✅ Una implementación, cinco usos
+```
+
+### 3. **Testabilidad**
+
+```php
+// tests/Unit/Domain/Services/TaskStatusManagerTest.php
+
+test('it validates transitions correctly', function () {
+    $mockRepository = Mockery::mock(TaskRepositoryInterface::class);
+    $statusManager = new TaskStatusManager($mockRepository);
+
+    $task = new Task(['status' => Status::PENDING]);
+
+    // ✅ Test unitario puro - sin base de datos
+    expect($statusManager->canTransition($task, Status::IN_PROGRESS))
+        ->toBeTrue();
+
+    expect($statusManager->canTransition($task, Status::COMPLETED))
+        ->toBeFalse();
+});
+
+test('it throws exception for invalid transition', function () {
+    $mockRepository = Mockery::mock(TaskRepositoryInterface::class);
+    $statusManager = new TaskStatusManager($mockRepository);
+
+    $task = new Task(['status' => Status::PENDING]);
+
+    // Debe lanzar excepción
+    $statusManager->transitionTo($task, Status::COMPLETED);
+})->throws(InvalidArgumentException::class);
+```
+
+### 4. **Separación de Responsabilidades**
+
+```php
+// Cada Domain Service tiene UNA responsabilidad clara:
+
+TaskStatusManager          → Gestiona transiciones de estado
+TaskDescriptionGenerator   → Genera descripciones con IA
+PromptBuilder              → Construye prompts efectivos
+OpenAIService              → Integra con OpenAI API
+MetricsCollector           → Recopila métricas del sistema
+ReportGenerator            → Genera reportes de análisis
+
+// Si necesitas cambiar cómo se generan descripciones:
+// → Solo modificas TaskDescriptionGenerator
+// → El resto del sistema no cambia
+```
+
+### 5. **Expresividad del Código**
+
+```php
+// ❌ Sin Domain Service: ¿Qué hace esto?
+$task->status = Status::IN_PROGRESS;
+$task->save();
+
+// ✅ Con Domain Service: Intención clara
+$this->statusManager->markAsInProgress($task);
+
+// ❌ Sin Domain Service: ¿Qué hace esto?
+$prompt = "Generate description for: {$task->title}...";
+$response = OpenAI::chat()->create([...]);
+$task->description = $response->choices[0]->message->content;
+
+// ✅ Con Domain Service: Intención clara
+$description = $this->descriptionGenerator->generate($task);
+```
+
+## 6.8 Domain Service vs Application Service
+
+### Diferencias Clave
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│           DOMAIN SERVICE vs APPLICATION SERVICE             │
+└─────────────────────────────────────────────────────────────┘
+
+DOMAIN SERVICE:
+├─ Ubicación: app/Domain/*/Services/
+├─ Lógica: Negocio pura (reglas, validaciones, cálculos)
+├─ Dependencias: Otros Domain Services, Repositories, Value Objects
+├─ NO hace: Emails, APIs externas, filesystem, cache
+├─ Ejemplos: TaskStatusManager, PromptBuilder
+└─ Objetivo: Encapsular conocimiento del dominio
+
+APPLICATION SERVICE:
+├─ Ubicación: app/Application/*/Services/ (o app/Services/)
+├─ Lógica: Coordinación y orquestación
+├─ Dependencias: Domain Services, Infrastructure services
+├─ SÍ hace: Emails, APIs externas, filesystem, cache, DB transactions
+├─ Ejemplos: SendTaskNotification, ExportTasksToPDF
+└─ Objetivo: Coordinar casos de uso completos
+```
+
+### Ejemplo Comparativo
+
+```php
+// ✅ DOMAIN SERVICE: TaskStatusManager
+class TaskStatusManager
+{
+    public function transitionTo(Task $task, Status $newStatus): bool
+    {
+        // LÓGICA DE NEGOCIO PURA
+        if (!$task->status->canTransitionTo($newStatus)) {
+            throw new InvalidArgumentException(...);
+        }
+
+        return $this->repository->updateStatus($task->id, $newStatus);
+    }
+}
+
+// ✅ APPLICATION SERVICE: TaskStatusNotifier
+class TaskStatusNotifier
+{
+    public function notifyStatusChange(Task $task, Status $oldStatus, Status $newStatus): void
+    {
+        // ORQUESTACIÓN DE INFRAESTRUCTURA
+
+        // 1. Usa Domain Service para validar
+        if (!$this->statusManager->canTransition($task, $newStatus)) {
+            throw new InvalidTransitionException();
+        }
+
+        // 2. Aplica el cambio
+        $this->statusManager->transitionTo($task, $newStatus);
+
+        // 3. Envía notificaciones (INFRASTRUCTURE)
+        Mail::to($task->assignedTo)->send(
+            new TaskStatusChanged($task, $oldStatus, $newStatus)
+        );
+
+        // 4. Registra en log (INFRASTRUCTURE)
+        Log::info("Task {$task->id} changed from {$oldStatus->value} to {$newStatus->value}");
+
+        // 5. Dispara evento (INFRASTRUCTURE)
+        event(new TaskStatusUpdated($task));
+    }
+}
+```
+
+## 6.9 Cuándo NO usar Domain Service
+
+### ❌ NO uses Domain Service si:
+
+1. **La lógica pertenece a una entidad**
+   ```php
+   // ❌ NO necesitas un Domain Service
+   class UserService
+   {
+       public function getFullName(User $user): string
+       {
+           return $user->first_name . ' ' . $user->last_name;
+       }
+   }
+
+   // ✅ Debe ser método de User
+   class User
+   {
+       public function getFullName(): string
+       {
+           return "{$this->first_name} {$this->last_name}";
+       }
+   }
+   ```
+
+2. **La lógica pertenece a un Value Object**
+   ```php
+   // ❌ NO necesitas un Domain Service
+   class MoneyService
+   {
+       public function add(Money $a, Money $b): Money
+       {
+           return new Money($a->amount + $b->amount, $a->currency);
+       }
+   }
+
+   // ✅ Debe ser método de Money
+   class Money
+   {
+       public function add(Money $other): self
+       {
+           return new self($this->amount + $other->amount, $this->currency);
+       }
+   }
+   ```
+
+3. **Es solo acceso a datos (usa Repository)**
+   ```php
+   // ❌ NO necesitas un Domain Service
+   class TaskFinderService
+   {
+       public function findById(int $id): ?Task
+       {
+           return Task::find($id);
+       }
+   }
+
+   // ✅ Usa Repository
+   $task = $this->taskRepository->findById($id);
+   ```
+
+4. **Es infraestructura, no negocio (usa Application Service)**
+   ```php
+   // ❌ NO es Domain Service (usa APIs externas)
+   class EmailService  // → Debe ser Application Service
+   {
+       public function send(string $to, string $subject): void
+       {
+           Mail::to($to)->send(...);  // ← Infraestructura
+       }
+   }
+   ```
+
+## 6.10 Ejercicios Prácticos
+
+### Ejercicio 1: TaskAssignmentService
+
+Crea un Domain Service que gestione la asignación de tareas:
+
+```php
+<?php
+
+namespace App\Domain\TaskManagement\Services;
+
+class TaskAssignmentService
+{
+    public function __construct(
+        private TaskRepositoryInterface $repository
+    ) {}
+
+    /**
+     * Assign a task to a user.
+     *
+     * LÓGICA DE NEGOCIO:
+     * - Validar que la tarea no esté completada
+     * - Validar que el usuario tenga capacidad (máx 10 tareas activas)
+     * - Actualizar assigned_to
+     * - Retornar true/false
+     */
+    public function assignTo(Task $task, int $userId): bool
+    {
+        // TODO: Implementar
+    }
+
+    /**
+     * Unassign a task.
+     */
+    public function unassign(Task $task): bool
+    {
+        // TODO: Implementar
+    }
+
+    /**
+     * Reassign from one user to another.
+     */
+    public function reassign(Task $task, int $newUserId): bool
+    {
+        // TODO: Implementar
+    }
+
+    /**
+     * Check if user can be assigned more tasks.
+     */
+    public function canAssign(int $userId): bool
+    {
+        // TODO: Contar tareas activas del usuario
+        // TODO: Retornar true si < 10
+    }
+}
+```
+
+### Ejercicio 2: TaskPriorityCalculator
+
+Crea un Domain Service que calcule automáticamente la prioridad:
+
+```php
+<?php
+
+namespace App\Domain\TaskManagement\Services;
+
+class TaskPriorityCalculator
+{
+    /**
+     * Calculate recommended priority based on task attributes.
+     *
+     * LÓGICA DE NEGOCIO:
+     * - Si due_date < 2 días → CRITICAL
+     * - Si due_date < 5 días → HIGH
+     * - Si tiene palabras clave urgentes → HIGH
+     * - Por defecto → MEDIUM
+     */
+    public function calculatePriority(Task $task): Priority
+    {
+        // TODO: Implementar lógica
+    }
+
+    /**
+     * Suggest priority increase if task is overdue.
+     */
+    public function suggestPriorityIncrease(Task $task): ?Priority
+    {
+        // TODO: Implementar
+    }
+}
+```
+
+### Ejercicio 3: Test del TaskStatusManager
+
+Escribe tests para el TaskStatusManager:
+
+```php
+<?php
+
+// tests/Unit/Domain/Services/TaskStatusManagerTest.php
+
+test('it transitions task to valid status', function () {
+    // TODO: Mock repository
+    // TODO: Crear TaskStatusManager
+    // TODO: Crear Task con status PENDING
+    // TODO: Transicionar a IN_PROGRESS
+    // TODO: Verificar que se llamó updateStatus en el repository
+});
+
+test('it throws exception for invalid transition', function () {
+    // TODO: Intentar transición inválida (PENDING → COMPLETED)
+    // TODO: Verificar que lanza InvalidArgumentException
+})->throws(InvalidArgumentException::class);
+
+test('it marks task as completed', function () {
+    // TODO: Usar método markAsCompleted
+    // TODO: Verificar que funcionó correctamente
+});
+```
+
+## 6.11 Resumen del Capítulo 6
+
+🎯 **Conceptos Clave Aprendidos:**
+
+1. **Domain Services** encapsulan lógica de negocio compleja
+   - No pertenece a una entidad específica
+   - Coordina múltiples entidades/agregados
+   - Vive en el Domain Layer
+
+2. **Cuándo usar Domain Service**
+   - Lógica involucra múltiples entidades
+   - Lógica es compleja (no es un simple cálculo)
+   - No es responsabilidad de una sola entidad
+   - No es solo acceso a datos
+
+3. **TaskStatusManager** gestiona transiciones
+   - Valida transiciones usando Value Object
+   - Coordina Task + Status + Repository
+   - Provee métodos de conveniencia
+   - 112 líneas de código
+
+4. **TaskDescriptionGenerator** usa IA
+   - Coordina Task + OpenAI + PromptBuilder
+   - Provee fallbacks para resiliencia
+   - Encapsula conocimiento sobre buenas descripciones
+   - 108 líneas de código
+
+5. **OpenAIService** abstrae API externa
+   - Encapsula configuración y parámetros
+   - Provee métodos especializados (JSON, system message)
+   - Estima tokens, verifica disponibilidad
+   - 80 líneas de código
+
+6. **PromptBuilder** encapsula prompt engineering
+   - Conocimiento del dominio sobre prompts efectivos
+   - Reutilizable en múltiples contexts
+   - 140 líneas de código
+
+7. **Ventajas sobre código disperso**
+   - Encapsulación (lógica centralizada)
+   - Reutilización (un servicio, muchos usos)
+   - Testabilidad (tests unitarios puros)
+   - Expresividad (intención clara)
+
+8. **Domain Service vs Application Service**
+   - Domain: Lógica de negocio pura
+   - Application: Orquestación + infraestructura
+
+🔜 **Próximo Capítulo:**
+En el Capítulo 7 exploraremos **TaskToolsServer**, el primer MCP Server completo que expone 6 herramientas CRUD para gestión de tareas.
+
+---
+
+**Estado del Tutorial:** Capítulos 1-6 de 15 completados ✓
