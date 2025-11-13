@@ -7006,3 +7006,1194 @@ En el Capítulo 7 exploraremos **TaskToolsServer**, el primer MCP Server complet
 ---
 
 **Estado del Tutorial:** Capítulos 1-6 de 15 completados ✓
+
+
+# Capítulo 7: TaskToolsServer - MCP Server CRUD Completo
+
+## 7.1 ¿Qué es un MCP Server?
+
+Un **MCP Server** es un servidor que expone herramientas (Tools), recursos (Resources) y prompts (Prompts) a través del protocolo MCP para que los LLMs puedan interactuar con tu aplicación Laravel.
+
+### 🔍 Analogía del Mundo Real
+
+Imagina que tu aplicación Laravel es una **cocina profesional**:
+
+```
+SIN MCP Server:
+┌──────────────┐
+│   Asistente  │  "¿Puedes hacerme un café?"
+│     IA       │
+└──────────────┘
+       ↓
+    ❌ No puede acceder a la cocina
+    ❌ No sabe qué máquinas hay
+    ❌ No puede usar los electrodomésticos
+
+CON MCP Server:
+┌──────────────┐
+│   Asistente  │  "¿Puedes hacerme un café?"
+│     IA       │
+└───────┬──────┘
+        │
+        ▼
+┌────────────────────────────────┐
+│   MCP Server (Menú de Tools)   │
+│                                │
+│  ✅ hacer_cafe()               │
+│  ✅ calentar_agua()            │
+│  ✅ tostar_pan()               │
+│  ✅ preparar_desayuno()        │
+└───────┬────────────────────────┘
+        │
+        ▼
+┌────────────────┐
+│   Laravel      │  Ejecuta la acción
+│   Application  │  Accede a la base de datos
+└────────────────┘  Aplica lógica de negocio
+```
+
+**TaskToolsServer** es como el **"Menú de la Cocina"** que le dice al asistente IA:
+- Qué puede hacer (Tools disponibles)
+- Qué parámetros necesita (JSON Schema)
+- Cómo usar cada herramienta (Descripciones)
+
+## 7.2 Anatomía del TaskToolsServer
+
+### 7.2.1 Código Completo Comentado
+
+```php
+<?php
+
+namespace App\Mcp\Servers;
+
+use App\Mcp\Tools\AssignTask;
+use App\Mcp\Tools\CreateTask;
+use App\Mcp\Tools\DeleteTask;
+use App\Mcp\Tools\GetTask;
+use App\Mcp\Tools\ListTasks;
+use App\Mcp\Tools\UpdateTask;
+use Laravel\Mcp\Server;
+
+/**
+ * TaskToolsServer
+ *
+ * Servidor MCP que expone 6 herramientas CRUD para gestión de tareas.
+ *
+ * Este servidor permite que LLMs:
+ * - Creen tareas en proyectos
+ * - Listen y filtren tareas
+ * - Obtengan detalles de tareas
+ * - Actualicen tareas (con validación de transiciones)
+ * - Eliminen tareas
+ * - Asignen tareas a usuarios
+ */
+class TaskToolsServer extends Server
+{
+    // ═══════════════════════════════════════════════════════════
+    // 📋 METADATOS DEL SERVIDOR
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * The MCP server's name.
+     *
+     * Este nombre aparece en:
+     * - Lista de servidores disponibles
+     * - Logs y debugging
+     * - Configuración del LLM
+     */
+    protected string $name = 'TaskMaster AI - Task Tools';
+
+    /**
+     * The MCP server's version.
+     *
+     * Útil para:
+     * - Versionado de API
+     * - Breaking changes
+     * - Compatibilidad con clientes
+     */
+    protected string $version = '1.0.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // 📖 INSTRUCCIONES PARA EL LLM
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * The MCP server's instructions for the LLM.
+     *
+     * Este texto es CRÍTICO:
+     * - El LLM lo lee para entender cómo usar las herramientas
+     * - Debe ser claro, conciso y completo
+     * - Incluye guías de uso y mejores prácticas
+     */
+    protected string $instructions = <<<'MARKDOWN'
+        # TaskMaster AI - Task Management Tools
+
+        This MCP server provides comprehensive task management capabilities for the TaskMaster AI platform.
+
+        ## Available Tools
+
+        - **create_task**: Create a new task in a project
+        - **list_tasks**: List and filter tasks by project, status, assignee, or search
+        - **get_task**: Get detailed information about a specific task
+        - **update_task**: Update task details, status, priority, or assignments
+        - **delete_task**: Delete a task
+        - **assign_task**: Assign a task to a user
+
+        ## Usage Guidelines
+
+        1. Always specify required fields when creating tasks (project_id, title, created_by)
+        2. Use appropriate priority levels: low, medium, high, critical
+        3. Status transitions follow rules: pending → in_progress → review → completed
+        4. Search tasks using keywords in title or description
+        5. Filter tasks by project, status, or assignee for focused views
+
+        ## Authentication
+
+        This server requires authentication via Laravel Sanctum tokens.
+        Include your token in the Authorization header.
+    MARKDOWN;
+
+    // ═══════════════════════════════════════════════════════════
+    // 🛠️ HERRAMIENTAS REGISTRADAS
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * The tools registered with this MCP server.
+     *
+     * IMPORTANTE: El orden puede importar en algunos clientes MCP
+     *
+     * @var array<int, class-string<\Laravel\Mcp\Server\Tool>>
+     */
+    protected array $tools = [
+        CreateTask::class,    // CRUD: Create
+        ListTasks::class,     // CRUD: Read (many)
+        GetTask::class,       // CRUD: Read (one)
+        UpdateTask::class,    // CRUD: Update
+        DeleteTask::class,    // CRUD: Delete
+        AssignTask::class,    // Action: Assign (lógica de negocio)
+    ];
+
+    /**
+     * The resources registered with this MCP server.
+     *
+     * Este servidor NO tiene Resources (son read-only data)
+     * Ver Analytics Servers para ejemplos de Resources
+     *
+     * @var array<int, class-string<\Laravel\Mcp\Server\Resource>>
+     */
+    protected array $resources = [
+        //
+    ];
+
+    /**
+     * The prompts registered with this MCP server.
+     *
+     * Este servidor NO tiene Prompts
+     * Ver TaskPromptsServer para ejemplos de Prompts
+     *
+     * @var array<int, class-string<\Laravel\Mcp\Server\Prompt>>
+     */
+    protected array $prompts = [
+        //
+    ];
+}
+```
+
+### 7.2.2 ¿Qué Hace Cada Parte?
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              FLUJO DE UNA SOLICITUD MCP                     │
+└─────────────────────────────────────────────────────────────┘
+
+1. LLM lee las instructions:
+   "Necesito crear una tarea llamada 'Fix login bug'"
+
+2. LLM decide usar la herramienta:
+   create_task
+
+3. LLM prepara los parámetros según el JSON Schema:
+   {
+     "project_id": 1,
+     "title": "Fix login bug",
+     "priority": "high",
+     "created_by": 1
+   }
+
+4. Servidor MCP valida el JSON Schema:
+   ✅ project_id es integer
+   ✅ title tiene entre 3-255 caracteres
+   ✅ priority es un enum válido
+
+5. Laravel instancia CreateTask Tool:
+   - Inyecta TaskRepositoryInterface
+   - Llama a handle() con Request
+
+6. CreateTask::handle() ejecuta:
+   - Usa el Repository para crear la tarea
+   - Aplica Value Objects (Priority, Status)
+   - Retorna Response JSON
+
+7. Respuesta llega al LLM:
+   {
+     "success": true,
+     "task": { "id": 42, "title": "Fix login bug", ... },
+     "message": "Task #42 created successfully"
+   }
+
+8. LLM interpreta y responde al usuario:
+   "✓ He creado la tarea #42: 'Fix login bug' con prioridad alta"
+```
+
+## 7.3 CreateTask Tool - Análisis Completo
+
+### 7.3.1 Código Completo Comentado
+
+```php
+<?php
+
+namespace App\Mcp\Tools;
+
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use App\Domain\TaskManagement\ValueObjects\Priority;
+use App\Domain\TaskManagement\ValueObjects\Status;
+use Illuminate\JsonSchema\JsonSchema;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
+use Laravel\Mcp\Server\Tool;
+
+/**
+ * CreateTask Tool
+ *
+ * Herramienta MCP para crear nuevas tareas en proyectos.
+ *
+ * RESPONSABILIDAD:
+ * - Validar parámetros de entrada (vía JSON Schema)
+ * - Crear tarea usando Repository
+ * - Aplicar valores por defecto (status = PENDING)
+ * - Retornar respuesta estructurada
+ */
+class CreateTask extends Tool
+{
+    // ═══════════════════════════════════════════════════════════
+    // 📖 DESCRIPCIÓN PARA EL LLM
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * The tool's description.
+     *
+     * Esta descripción es leída por el LLM para decidir cuándo
+     * usar esta herramienta.
+     *
+     * DEBE SER:
+     * - Clara y concisa
+     * - Explicar QUÉ hace (no CÓMO)
+     * - Mencionar parámetros importantes
+     */
+    protected string $description = <<<'MARKDOWN'
+        Create a new task in a project. Specify the project ID, title, description, priority, and other details.
+        The task will be created with 'pending' status by default.
+    MARKDOWN;
+
+    // ═══════════════════════════════════════════════════════════
+    // 💉 INYECCIÓN DE DEPENDENCIAS
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Constructor con Dependency Injection
+     *
+     * Laravel automáticamente inyecta el Repository configurado
+     * en RepositoryServiceProvider
+     */
+    public function __construct(
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {}
+
+    // ═══════════════════════════════════════════════════════════
+    // 🎯 MÉTODO PRINCIPAL
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Handle the tool request.
+     *
+     * Este método se ejecuta cuando el LLM llama a la herramienta.
+     *
+     * @param Request $request - Parámetros validados por JSON Schema
+     * @return Response - Respuesta JSON para el LLM
+     */
+    public function handle(Request $request): Response
+    {
+        // 1. Construir data array desde Request
+        $data = [
+            'project_id' => $request->input('project_id'),
+            'title' => $request->input('title'),
+            'description' => $request->input('description'),
+
+            // Value Objects desde strings
+            'priority' => Priority::from($request->input('priority', 'medium')),
+            'status' => Status::PENDING,  // ← Siempre PENDING al crear
+
+            // Campos opcionales
+            'created_by' => $request->input('created_by'),
+            'assigned_to' => $request->input('assigned_to'),
+            'due_date' => $request->input('due_date'),
+            'estimated_hours' => $request->input('estimated_hours'),
+        ];
+
+        // 2. Crear tarea usando Repository (patrón Repository)
+        $task = $this->taskRepository->create($data);
+
+        // 3. Retornar respuesta estructurada
+        return Response::json([
+            'success' => true,
+            'task' => [
+                'id' => $task->id,
+                'title' => $task->title,
+                'status' => $task->status->value,      // ← Enum → string
+                'priority' => $task->priority->value,  // ← Enum → string
+                'created_at' => $task->created_at->toIso8601String(),
+            ],
+            'message' => "Task #{$task->id} created successfully: {$task->title}",
+        ]);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 📋 JSON SCHEMA (VALIDACIÓN AUTOMÁTICA)
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Get the tool's input schema.
+     *
+     * Este schema define:
+     * - Qué parámetros acepta la herramienta
+     * - Tipos de datos
+     * - Validaciones (min, max, enum, etc.)
+     * - Campos requeridos vs opcionales
+     *
+     * Laravel valida automáticamente antes de llamar a handle()
+     *
+     * @return array<string, \Illuminate\JsonSchema\JsonSchema>
+     */
+    public function schema(JsonSchema $schema): array
+    {
+        return [
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // CAMPOS REQUERIDOS
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+            'project_id' => $schema->integer()
+                ->description('The ID of the project this task belongs to')
+                ->required(),  // ← REQUERIDO
+
+            'title' => $schema->string()
+                ->description('The task title')
+                ->minLength(3)      // ← Validación: mínimo 3 caracteres
+                ->maxLength(255)    // ← Validación: máximo 255 caracteres
+                ->required(),       // ← REQUERIDO
+
+            'created_by' => $schema->integer()
+                ->description('User ID of the task creator')
+                ->required(),  // ← REQUERIDO
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // CAMPOS OPCIONALES
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+            'description' => $schema->string()
+                ->description('Detailed description of the task')
+                ->optional(),  // ← OPCIONAL
+
+            'priority' => $schema->enum(['low', 'medium', 'high', 'critical'])
+                ->description('Task priority level')
+                ->default('medium'),  // ← Valor por defecto
+
+            'assigned_to' => $schema->integer()
+                ->description('User ID of the assignee')
+                ->optional(),  // ← OPCIONAL
+
+            'due_date' => $schema->string()
+                ->description('Due date in ISO 8601 format (e.g., 2025-11-20)')
+                ->optional(),  // ← OPCIONAL
+
+            'estimated_hours' => $schema->integer()
+                ->description('Estimated hours to complete the task')
+                ->minimum(1)       // ← Validación: al menos 1 hora
+                ->optional(),      // ← OPCIONAL
+        ];
+    }
+}
+```
+
+### 7.3.2 Flujo de Ejecución Detallado
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│         FLUJO COMPLETO: CreateTask Tool                     │
+└─────────────────────────────────────────────────────────────┘
+
+1. LLM DECIDE USAR CREATETASK
+   ├─ Lee description: "Create a new task in a project"
+   ├─ Usuario dijo: "Create task 'Fix bug' in project 1"
+   └─ Decisión: ✓ Usar create_task
+
+2. LLM PREPARA PARÁMETROS
+   ├─ Lee schema para saber qué enviar
+   ├─ Genera JSON:
+   │   {
+   │     "project_id": 1,
+   │     "title": "Fix bug",
+   │     "priority": "high",
+   │     "created_by": 1
+   │   }
+   └─ Envía request MCP
+
+3. MCP SERVER VALIDA (AUTOMÁTICO)
+   ├─ project_id: ✓ es integer
+   ├─ title: ✓ tiene entre 3-255 chars
+   ├─ priority: ✓ es uno de [low, medium, high, critical]
+   ├─ created_by: ✓ es integer
+   └─ Si todo OK → continúa, si no → error 400
+
+4. LARAVEL INSTANCIA CREATETASK
+   ├─ Service Container resuelve dependencias
+   ├─ Inyecta TaskRepositoryInterface
+   │   └─ (que en realidad es EloquentTaskRepository)
+   └─ Crea instancia de CreateTask
+
+5. CREATETASK::HANDLE() SE EJECUTA
+   ├─ Construye $data array
+   ├─ Convierte strings a Value Objects:
+   │   ├─ 'high' → Priority::HIGH
+   │   └─ PENDING → Status::PENDING (por defecto)
+   ├─ Llama a $taskRepository->create($data)
+   └─ Repository guarda en DB con Eloquent
+
+6. ELOQUENT PROCESA
+   ├─ Task::create($data)
+   ├─ Casting automático:
+   │   ├─ Priority::HIGH → 'high' (string en DB)
+   │   └─ Status::PENDING → 'pending' (string en DB)
+   └─ Retorna Task model
+
+7. CREATETASK RETORNA RESPONSE
+   ├─ Construye Response::json([...])
+   ├─ Convierte Value Objects a strings:
+   │   ├─ $task->status->value → 'pending'
+   │   └─ $task->priority->value → 'high'
+   └─ Retorna JSON estructurado
+
+8. LLM RECIBE RESPUESTA
+   {
+     "success": true,
+     "task": {
+       "id": 42,
+       "title": "Fix bug",
+       "status": "pending",
+       "priority": "high",
+       "created_at": "2025-11-13T10:30:00Z"
+     },
+     "message": "Task #42 created successfully: Fix bug"
+   }
+
+9. LLM RESPONDE AL USUARIO
+   "✓ Creé la tarea #42: 'Fix bug' con prioridad alta en proyecto 1"
+```
+
+### 7.3.3 Ejemplo de Uso desde Claude
+
+```
+USER:
+"Create a task called 'Implement user authentication'
+in project 2 with high priority"
+
+CLAUDE (internamente):
+1. Analiza el mensaje
+2. Identifica: necesita crear tarea
+3. Consulta herramientas disponibles
+4. Encuentra: create_task
+5. Lee schema para saber parámetros
+6. Prepara JSON:
+
+{
+  "project_id": 2,
+  "title": "Implement user authentication",
+  "priority": "high",
+  "created_by": 1  // (obtiene del contexto)
+}
+
+7. Llama al MCP Tool
+8. Recibe respuesta
+9. Responde al usuario:
+
+CLAUDE:
+"✓ I've created task #15: 'Implement user authentication'
+in project 2 with high priority. The task is currently pending."
+```
+
+## 7.4 ListTasks Tool - Filtros y Búsqueda
+
+### 7.4.1 Código Completo Comentado
+
+```php
+<?php
+
+namespace App\Mcp\Tools;
+
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use App\Domain\TaskManagement\ValueObjects\Status;
+use Illuminate\JsonSchema\JsonSchema;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
+use Laravel\Mcp\Server\Tool;
+
+/**
+ * ListTasks Tool
+ *
+ * Herramienta MCP para listar y filtrar tareas.
+ *
+ * CARACTERÍSTICAS:
+ * - Filtro por proyecto
+ * - Filtro por status
+ * - Filtro por usuario asignado
+ * - Búsqueda de texto
+ * - Listar todas si no hay filtros
+ */
+class ListTasks extends Tool
+{
+    protected string $description = <<<'MARKDOWN'
+        List tasks with optional filters. You can filter by project, status, assigned user, or search by text.
+        Returns a paginated list of tasks with their details.
+    MARKDOWN;
+
+    public function __construct(
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {}
+
+    /**
+     * Handle the tool request.
+     *
+     * LÓGICA:
+     * 1. Obtener filtros del request
+     * 2. Aplicar filtros en orden de prioridad
+     * 3. Formatear resultado
+     * 4. Retornar JSON
+     */
+    public function handle(Request $request): Response
+    {
+        // 1. Extraer filtros
+        $projectId = $request->input('project_id');
+        $status = $request->input('status');
+        $assignedTo = $request->input('assigned_to');
+        $search = $request->input('search');
+
+        // 2. Aplicar filtros (cascada de if-elseif)
+        // IMPORTANTE: Solo un filtro a la vez (prioridad)
+        if ($projectId) {
+            $tasks = $this->taskRepository->findByProjectId($projectId);
+        } elseif ($status) {
+            // Convierte string → Status enum
+            $tasks = $this->taskRepository->findByStatus(Status::from($status));
+        } elseif ($assignedTo) {
+            $tasks = $this->taskRepository->findByAssignedTo($assignedTo);
+        } elseif ($search) {
+            // Búsqueda en title y description
+            $tasks = $this->taskRepository->search($search);
+        } else {
+            // Sin filtros: todas las tareas
+            $tasks = $this->taskRepository->all();
+        }
+
+        // 3. Formatear tareas para el LLM
+        $formattedTasks = $tasks->map(fn ($task) => [
+            'id' => $task->id,
+            'title' => $task->title,
+            'description' => $task->description,
+            'status' => $task->status->value,           // Enum → string
+            'priority' => $task->priority->value,       // Enum → string
+            'project_id' => $task->project_id,
+            'project_name' => $task->project->name ?? null,  // Relación
+            'assigned_to' => $task->assigned_to,
+            'assignee_name' => $task->assignedTo->name ?? null,  // Relación
+            'due_date' => $task->due_date?->toDateString(),
+            'created_at' => $task->created_at->toIso8601String(),
+        ])->values();  // ← Re-indexa array (0, 1, 2...)
+
+        // 4. Retornar respuesta
+        return Response::json([
+            'success' => true,
+            'count' => $tasks->count(),
+            'tasks' => $formattedTasks,
+        ]);
+    }
+
+    /**
+     * Get the tool's input schema.
+     *
+     * NOTA: Todos los parámetros son OPCIONALES
+     * Sin parámetros = listar todas las tareas
+     */
+    public function schema(JsonSchema $schema): array
+    {
+        return [
+            'project_id' => $schema->integer()
+                ->description('Filter tasks by project ID')
+                ->optional(),
+
+            'status' => $schema->enum(['pending', 'in_progress', 'review', 'completed', 'blocked'])
+                ->description('Filter tasks by status')
+                ->optional(),
+
+            'assigned_to' => $schema->integer()
+                ->description('Filter tasks by assignee user ID')
+                ->optional(),
+
+            'search' => $schema->string()
+                ->description('Search tasks by title or description')
+                ->optional(),
+        ];
+    }
+}
+```
+
+### 7.4.2 Ejemplos de Uso
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│               EJEMPLOS DE USO: ListTasks                    │
+└─────────────────────────────────────────────────────────────┘
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EJEMPLO 1: Listar todas las tareas
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+USER: "Show me all tasks"
+
+CLAUDE llama:
+list_tasks({})  // ← Sin parámetros
+
+Resultado:
+{
+  "success": true,
+  "count": 42,
+  "tasks": [
+    { "id": 1, "title": "Task 1", ... },
+    { "id": 2, "title": "Task 2", ... },
+    ...
+  ]
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EJEMPLO 2: Filtrar por proyecto
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+USER: "What tasks are in project 3?"
+
+CLAUDE llama:
+list_tasks({ "project_id": 3 })
+
+Resultado:
+{
+  "success": true,
+  "count": 5,
+  "tasks": [
+    { "id": 10, "title": "...", "project_id": 3 },
+    { "id": 11, "title": "...", "project_id": 3 },
+    ...
+  ]
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EJEMPLO 3: Filtrar por status
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+USER: "Show me all tasks in review"
+
+CLAUDE llama:
+list_tasks({ "status": "review" })
+
+Resultado:
+{
+  "success": true,
+  "count": 3,
+  "tasks": [
+    { "id": 5, "title": "...", "status": "review" },
+    { "id": 8, "title": "...", "status": "review" },
+    ...
+  ]
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EJEMPLO 4: Buscar por texto
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+USER: "Find tasks related to authentication"
+
+CLAUDE llama:
+list_tasks({ "search": "authentication" })
+
+Resultado:
+{
+  "success": true,
+  "count": 2,
+  "tasks": [
+    { "id": 15, "title": "Implement user authentication", ... },
+    { "id": 20, "title": "Fix authentication bug", ... }
+  ]
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EJEMPLO 5: Filtrar por usuario asignado
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+USER: "What are John's tasks?" (user_id = 5)
+
+CLAUDE llama:
+list_tasks({ "assigned_to": 5 })
+
+Resultado:
+{
+  "success": true,
+  "count": 7,
+  "tasks": [
+    { "id": 1, "title": "...", "assigned_to": 5, "assignee_name": "John" },
+    { "id": 4, "title": "...", "assigned_to": 5, "assignee_name": "John" },
+    ...
+  ]
+}
+```
+
+## 7.5 UpdateTask Tool - Validación de Transiciones
+
+### 7.5.1 Código Completo Comentado
+
+```php
+<?php
+
+namespace App\Mcp\Tools;
+
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use App\Domain\TaskManagement\Services\TaskStatusManager;
+use App\Domain\TaskManagement\ValueObjects\Priority;
+use App\Domain\TaskManagement\ValueObjects\Status;
+use Illuminate\JsonSchema\JsonSchema;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
+use Laravel\Mcp\Server\Tool;
+
+/**
+ * UpdateTask Tool
+ *
+ * Herramienta MCP para actualizar tareas existentes.
+ *
+ * CARACTERÍSTICAS ESPECIALES:
+ * - Actualización parcial (solo campos enviados)
+ * - Validación de transiciones de estado
+ * - Usa TaskStatusManager (Domain Service)
+ */
+class UpdateTask extends Tool
+{
+    protected string $description = <<<'MARKDOWN'
+        Update an existing task. You can update title, description, status, priority, assignee, due date, and hours.
+        Status transitions are validated to ensure proper workflow.
+    MARKDOWN;
+
+    /**
+     * Inyección de MÚLTIPLES dependencias
+     *
+     * - Repository: Para leer y guardar
+     * - StatusManager: Para validar transiciones (Domain Service)
+     */
+    public function __construct(
+        private readonly TaskRepositoryInterface $taskRepository,
+        private readonly TaskStatusManager $statusManager  // ← Domain Service
+    ) {}
+
+    /**
+     * Handle the tool request.
+     *
+     * FLUJO:
+     * 1. Verificar que la tarea existe
+     * 2. Construir data con solo los campos enviados
+     * 3. Validar status si fue enviado
+     * 4. Actualizar tarea
+     * 5. Retornar tarea actualizada
+     */
+    public function handle(Request $request): Response
+    {
+        // 1. Buscar tarea
+        $taskId = $request->input('task_id');
+        $task = $this->taskRepository->findById($taskId);
+
+        if (!$task) {
+            return Response::json([
+                'success' => false,
+                'error' => "Task #{$taskId} not found",
+            ]);
+        }
+
+        $data = [];
+
+        // 2. Construir data solo con campos enviados (actualización parcial)
+        if ($request->has('title')) {
+            $data['title'] = $request->input('title');
+        }
+
+        if ($request->has('description')) {
+            $data['description'] = $request->input('description');
+        }
+
+        if ($request->has('priority')) {
+            $data['priority'] = Priority::from($request->input('priority'));
+        }
+
+        if ($request->has('assigned_to')) {
+            $data['assigned_to'] = $request->input('assigned_to');
+        }
+
+        if ($request->has('due_date')) {
+            $data['due_date'] = $request->input('due_date');
+        }
+
+        if ($request->has('estimated_hours')) {
+            $data['estimated_hours'] = $request->input('estimated_hours');
+        }
+
+        if ($request->has('actual_hours')) {
+            $data['actual_hours'] = $request->input('actual_hours');
+        }
+
+        // 3. VALIDACIÓN ESPECIAL: Status transitions
+        if ($request->has('status')) {
+            $newStatus = Status::from($request->input('status'));
+
+            // Usa Domain Service para validar
+            if (!$this->statusManager->canTransition($task, $newStatus)) {
+                return Response::json([
+                    'success' => false,
+                    'error' => "Cannot transition from {$task->status->value} to {$newStatus->value}",
+                    'available_transitions' => array_map(
+                        fn ($status) => $status->value,
+                        $this->statusManager->getAvailableTransitions($task)
+                    ),
+                ]);
+            }
+
+            $data['status'] = $newStatus;
+        }
+
+        // 4. Actualizar tarea
+        $updated = $this->taskRepository->update($taskId, $data);
+
+        if (!$updated) {
+            return Response::json([
+                'success' => false,
+                'error' => 'Failed to update task',
+            ]);
+        }
+
+        // 5. Recargar tarea para obtener datos actualizados
+        $task = $this->taskRepository->findById($taskId);
+
+        return Response::json([
+            'success' => true,
+            'task' => [
+                'id' => $task->id,
+                'title' => $task->title,
+                'status' => $task->status->value,
+                'priority' => $task->priority->value,
+                'updated_at' => $task->updated_at->toIso8601String(),
+            ],
+            'message' => "Task #{$task->id} updated successfully",
+        ]);
+    }
+
+    /**
+     * Get the tool's input schema.
+     *
+     * NOTA:
+     * - task_id es REQUERIDO
+     * - Todos los demás campos son OPCIONALES (actualización parcial)
+     */
+    public function schema(JsonSchema $schema): array
+    {
+        return [
+            'task_id' => $schema->integer()
+                ->description('The ID of the task to update')
+                ->minimum(1)
+                ->required(),  // ← ÚNICO CAMPO REQUERIDO
+
+            'title' => $schema->string()
+                ->description('New task title')
+                ->minLength(3)
+                ->maxLength(255)
+                ->optional(),
+
+            'description' => $schema->string()
+                ->description('New task description')
+                ->optional(),
+
+            'status' => $schema->enum(['pending', 'in_progress', 'review', 'completed', 'blocked'])
+                ->description('New task status (transitions are validated)')
+                ->optional(),
+
+            'priority' => $schema->enum(['low', 'medium', 'high', 'critical'])
+                ->description('New task priority')
+                ->optional(),
+
+            'assigned_to' => $schema->integer()
+                ->description('User ID to assign the task to')
+                ->optional(),
+
+            'due_date' => $schema->string()
+                ->description('New due date in ISO 8601 format')
+                ->optional(),
+
+            'estimated_hours' => $schema->integer()
+                ->description('Estimated hours to complete')
+                ->minimum(1)
+                ->optional(),
+
+            'actual_hours' => $schema->integer()
+                ->description('Actual hours spent')
+                ->minimum(0)
+                ->optional(),
+        ];
+    }
+}
+```
+
+### 7.5.2 Ejemplo: Validación de Transiciones
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│        EJEMPLO: Transición Inválida Detectada              │
+└─────────────────────────────────────────────────────────────┘
+
+USER:
+"Mark task #5 as completed"
+
+Estado actual de task #5:
+{
+  "id": 5,
+  "status": "pending",  ← Actualmente PENDING
+  ...
+}
+
+CLAUDE llama:
+update_task({
+  "task_id": 5,
+  "status": "completed"  ← Intenta cambiar a COMPLETED
+})
+
+UpdateTask::handle() ejecuta:
+1. Busca task #5: ✓ existe
+2. Extrae newStatus = Status::COMPLETED
+3. Valida transición:
+   $this->statusManager->canTransition($task, Status::COMPLETED)
+   ↓
+   Status::PENDING->canTransitionTo(Status::COMPLETED)
+   ↓
+   return false;  ← PENDING no puede ir directo a COMPLETED
+
+4. Retorna error con transiciones disponibles:
+
+RESPONSE:
+{
+  "success": false,
+  "error": "Cannot transition from pending to completed",
+  "available_transitions": [
+    "in_progress",  ← PENDING puede ir aquí
+    "blocked"       ← O aquí
+  ]
+}
+
+CLAUDE responde al usuario:
+"I cannot mark task #5 as completed because it's currently pending.
+Tasks must go through these steps: pending → in_progress → review → completed.
+
+Would you like me to mark it as 'in_progress' instead?"
+```
+
+## 7.6 Resumen de las 6 Herramientas
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│          TASKTOOLS SERVER: 6 HERRAMIENTAS CRUD              │
+└─────────────────────────────────────────────────────────────┘
+
+1. CreateTask
+   ├─ Operación: CREATE (CRUD)
+   ├─ Parámetros: project_id, title, description, priority, etc.
+   ├─ Validaciones: JSON Schema
+   ├─ Lógica: Repository->create()
+   └─ Retorna: Tarea creada con id
+
+2. ListTasks
+   ├─ Operación: READ many (CRUD)
+   ├─ Filtros: project_id, status, assigned_to, search
+   ├─ Validaciones: Ninguna (todos opcionales)
+   ├─ Lógica: Repository->findBy*() o all()
+   └─ Retorna: Array de tareas
+
+3. GetTask
+   ├─ Operación: READ one (CRUD)
+   ├─ Parámetros: task_id
+   ├─ Validaciones: task_id requerido
+   ├─ Lógica: Repository->findById()
+   └─ Retorna: Tarea con detalles completos
+
+4. UpdateTask
+   ├─ Operación: UPDATE (CRUD)
+   ├─ Parámetros: task_id + campos a actualizar
+   ├─ Validaciones: JSON Schema + TaskStatusManager
+   ├─ Lógica: Repository->update() con validación de transiciones
+   └─ Retorna: Tarea actualizada
+
+5. DeleteTask
+   ├─ Operación: DELETE (CRUD)
+   ├─ Parámetros: task_id
+   ├─ Validaciones: Verifica existencia
+   ├─ Lógica: Repository->delete()
+   └─ Retorna: Confirmación de eliminación
+
+6. AssignTask
+   ├─ Operación: ACTION (no es CRUD puro)
+   ├─ Parámetros: task_id, user_id
+   ├─ Validaciones: Existencia de task y user
+   ├─ Lógica: Repository->assign()
+   └─ Retorna: Tarea asignada
+```
+
+## 7.7 Ejercicios Prácticos
+
+### Ejercicio 1: Crear GetTask Tool
+
+Implementa el Tool que falta (solo mostramos el skeleton):
+
+```php
+<?php
+
+namespace App\Mcp\Tools;
+
+class GetTask extends Tool
+{
+    protected string $description = <<<'MARKDOWN'
+        Get detailed information about a specific task by its ID.
+        Returns all task fields including relationships (project, assignee, tags, comments).
+    MARKDOWN;
+
+    public function __construct(
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {}
+
+    public function handle(Request $request): Response
+    {
+        // TODO: Implementar
+        // 1. Obtener task_id del request
+        // 2. Buscar tarea con findById()
+        // 3. Si no existe, retornar error
+        // 4. Formatear tarea con todas sus relaciones
+        // 5. Retornar JSON
+    }
+
+    public function schema(JsonSchema $schema): array
+    {
+        return [
+            'task_id' => $schema->integer()
+                ->description('The ID of the task to retrieve')
+                ->minimum(1)
+                ->required(),
+        ];
+    }
+}
+```
+
+### Ejercicio 2: Agregar Filtro Combinado
+
+Modifica ListTasks para permitir filtros combinados (actualmente solo usa uno):
+
+```php
+// ACTUAL: Solo un filtro a la vez
+if ($projectId) {
+    $tasks = $this->taskRepository->findByProjectId($projectId);
+} elseif ($status) {
+    // ...
+}
+
+// MEJORADO: Filtros combinados
+// TODO: Implementar lógica que permita:
+// - project_id + status
+// - project_id + assigned_to
+// - status + assigned_to
+// - Todos juntos
+```
+
+### Ejercicio 3: Test de UpdateTask
+
+Escribe tests para el UpdateTask Tool:
+
+```php
+test('it updates task title successfully', function () {
+    // TODO: Mock repository
+    // TODO: Mock status manager
+    // TODO: Crear UpdateTask tool
+    // TODO: Simular request con task_id y title
+    // TODO: Verificar que se llamó update() con datos correctos
+});
+
+test('it rejects invalid status transition', function () {
+    // TODO: Mock repository que retorna task con status PENDING
+    // TODO: Mock status manager que retorna false para canTransition
+    // TODO: Intentar cambiar a COMPLETED
+    // TODO: Verificar que retorna error con available_transitions
+});
+```
+
+## 7.8 Resumen del Capítulo 7
+
+🎯 **Conceptos Clave Aprendidos:**
+
+1. **MCP Server** estructura y responsabilidades
+   - Metadatos (name, version)
+   - Instructions para el LLM
+   - Registro de Tools, Resources, Prompts
+   - 87 líneas de código
+
+2. **CreateTask Tool** - operación CREATE
+   - Descripción clara para el LLM
+   - JSON Schema con validaciones
+   - Dependency Injection (Repository)
+   - Value Objects (Priority, Status)
+   - 97 líneas de código
+
+3. **ListTasks Tool** - operación READ (many)
+   - Múltiples filtros opcionales
+   - Lógica de cascada (if-elseif)
+   - Formateo de relaciones
+   - 93 líneas de código
+
+4. **UpdateTask Tool** - operación UPDATE
+   - Actualización parcial (solo campos enviados)
+   - Validación de transiciones con Domain Service
+   - Mensajes de error informativos
+   - 162 líneas de código
+
+5. **Flujo completo MCP**
+   - LLM lee instructions y schema
+   - Prepara parámetros JSON
+   - Validación automática
+   - Tool ejecuta lógica de negocio
+   - Respuesta estructurada
+
+6. **Integración arquitectural**
+   - Tools usan Repositories (patrón Repository)
+   - Tools usan Domain Services (TaskStatusManager)
+   - Value Objects en toda la stack
+   - Dependency Injection automática
+
+🔜 **Próximo Capítulo:**
+En el Capítulo 8 exploraremos **AIAssistantServer**, viendo cómo integrar IA generativa en las herramientas MCP para generar descripciones, sugerir prioridades, y analizar productividad.
+
+---
+
+**Estado del Tutorial:** Capítulos 1-7 de 15 completados ✓
