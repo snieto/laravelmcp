@@ -11873,3 +11873,1154 @@ protected $casts = [
 ---
 
 **Estado del Tutorial:** Capítulos 1-10 de 15 completados ✓
+
+---
+
+# Capítulo 11: Testing - Asegurando Calidad del Código
+
+## 11.1 ¿Por Qué Testear?
+
+### Analogía: Piloto de Avión
+
+Imagina que eres piloto de avión:
+- **Sin tests**: Vuelas sin comprobar que todo funcione → Riesgo de crash
+- **Con tests**: Checklist pre-vuelo que verifica cada sistema → Vuelo seguro
+
+**Los tests son tu checklist** que verifica que cada parte del código funciona correctamente.
+
+### Beneficios del Testing
+
+| Beneficio | Descripción | Ejemplo |
+|-----------|-------------|---------|
+| **Confianza** | Puedes hacer cambios sin miedo | Refactorizar sin romper funcionalidad |
+| **Documentación** | Los tests documentan cómo usar el código | Ver test para entender API |
+| **Detección temprana** | Encuentras bugs antes de producción | Test falla, arreglas antes de deploy |
+| **Diseño mejor** | Código testeable es mejor código | Separación de responsabilidades |
+| **Regresión** | Evitas reintroducir bugs | Test previene que bug vuelva |
+
+---
+
+## 11.2 Pirámide de Testing
+
+```
+                    ┌───────────────┐
+                    │   E2E Tests   │  (Pocos, lentos, costosos)
+                    │  (End-to-End) │
+                    └───────────────┘
+                ┌─────────────────────┐
+                │   Integration Tests  │  (Algunos, medios)
+                │  (Feature Tests en   │
+                │    Laravel)          │
+                └─────────────────────┘
+            ┌──────────────────────────────┐
+            │      Unit Tests               │  (Muchos, rápidos, baratos)
+            │   (Funciones individuales)    │
+            └──────────────────────────────┘
+```
+
+### Tipos de Tests
+
+**1. Unit Tests (Base de la pirámide)**
+- Testean **una unidad pequeña** de código (función, método)
+- **Rápidos** (milisegundos)
+- **No usan base de datos**
+- **Aislan dependencias** (mocking)
+
+**2. Feature/Integration Tests (Medio)**
+- Testean **integración entre componentes**
+- **Usan base de datos** (con RefreshDatabase)
+- Más lentos que unit tests
+- Verifican que partes trabajen juntas
+
+**3. End-to-End Tests (Cima)**
+- Testean **flujo completo** como usuario
+- **Muy lentos** (segundos)
+- Usan navegador (Laravel Dusk)
+- Más frágiles
+
+---
+
+## 11.3 Estructura de Tests en Laravel
+
+```
+tests/
+├── Feature/              # Integration/Feature tests
+│   ├── Repositories/
+│   │   └── TaskRepositoryTest.php
+│   └── Http/
+│       └── TaskApiTest.php
+│
+├── Unit/                 # Unit tests
+│   ├── Domain/
+│   │   ├── ValueObjects/
+│   │   │   ├── StatusTest.php
+│   │   │   └── PriorityTest.php
+│   │   └── Services/
+│   │       └── TaskStatusManagerTest.php
+│   └── Helpers/
+│       └── StringHelperTest.php
+│
+├── Integration/          # Integration tests
+│   └── Mcp/
+│       ├── CreateTaskToolTest.php
+│       └── TaskToolsServerTest.php
+│
+└── TestCase.php         # Base test class
+```
+
+**Convenciones:**
+- Sufijo `Test.php` obligatorio
+- Namespace coincide con estructura de carpetas
+- Un archivo de test por clase testeada
+
+---
+
+## 11.4 Unit Tests: Value Objects
+
+### Testear Status Value Object
+
+**Archivo:** `tests/Unit/Domain/ValueObjects/StatusTest.php`
+
+```php
+<?php
+
+namespace Tests\Unit\Domain\ValueObjects;
+
+use App\Domain\TaskManagement\ValueObjects\Status;
+use PHPUnit\Framework\TestCase;
+
+class StatusTest extends TestCase
+{
+    /** @test */
+    public function it_can_check_valid_transitions()
+    {
+        // Arrange: Preparar datos
+        $pending = Status::PENDING;
+        $inProgress = Status::IN_PROGRESS;
+
+        // Act & Assert: Ejecutar y verificar
+        $this->assertTrue($pending->canTransitionTo($inProgress));
+        $this->assertTrue($pending->canTransitionTo(Status::BLOCKED));
+        $this->assertFalse($pending->canTransitionTo(Status::REVIEW));
+    }
+
+    /** @test */
+    public function completed_status_can_be_reopened()
+    {
+        // Arrange
+        $completed = Status::COMPLETED;
+
+        // Assert: Can reopen to in_progress
+        $this->assertTrue($completed->canTransitionTo(Status::IN_PROGRESS));
+
+        // Assert: Cannot transition to other statuses
+        $this->assertFalse($completed->canTransitionTo(Status::PENDING));
+        $this->assertFalse($completed->canTransitionTo(Status::REVIEW));
+        $this->assertFalse($completed->canTransitionTo(Status::BLOCKED));
+    }
+
+    /** @test */
+    public function it_returns_available_transitions()
+    {
+        // Arrange
+        $pending = Status::PENDING;
+
+        // Act
+        $availableTransitions = $pending->availableTransitions();
+
+        // Assert
+        $this->assertContains(Status::IN_PROGRESS, $availableTransitions);
+        $this->assertContains(Status::BLOCKED, $availableTransitions);
+        $this->assertNotContains(Status::COMPLETED, $availableTransitions);
+    }
+
+    /** @test */
+    public function it_returns_label()
+    {
+        $this->assertEquals('Pendiente', Status::PENDING->label());
+        $this->assertEquals('En Progreso', Status::IN_PROGRESS->label());
+        $this->assertEquals('Completada', Status::COMPLETED->label());
+    }
+
+    /** @test */
+    public function it_returns_color()
+    {
+        $this->assertEquals('gray', Status::PENDING->color());
+        $this->assertEquals('blue', Status::IN_PROGRESS->color());
+        $this->assertEquals('green', Status::COMPLETED->color());
+        $this->assertEquals('red', Status::BLOCKED->color());
+    }
+}
+```
+
+### Anatomía de un Unit Test
+
+**1. Patrón AAA (Arrange-Act-Assert)**
+
+```php
+/** @test */
+public function example_test()
+{
+    // Arrange: Preparar el escenario
+    $priority = Priority::HIGH;
+
+    // Act: Ejecutar la acción
+    $score = $priority->score();
+
+    // Assert: Verificar el resultado
+    $this->assertEquals(3, $score);
+}
+```
+
+**2. Anotación `@test` o prefijo `test_`**
+
+```php
+// Opción 1: Anotación @test
+/** @test */
+public function it_calculates_score() { }
+
+// Opción 2: Prefijo test_
+public function test_it_calculates_score() { }
+```
+
+**3. Nombres Descriptivos**
+
+```php
+// ✅ Bueno: Describe QUÉ verifica
+public function it_returns_available_transitions()
+public function completed_status_can_be_reopened()
+public function it_rejects_invalid_status_transition()
+
+// ❌ Malo: No describe qué verifica
+public function test1()
+public function testStatus()
+```
+
+### Testear Priority Value Object
+
+```php
+<?php
+
+namespace Tests\Unit\Domain\ValueObjects;
+
+use App\Domain\TaskManagement\ValueObjects\Priority;
+use PHPUnit\Framework\TestCase;
+
+class PriorityTest extends TestCase
+{
+    /** @test */
+    public function it_returns_correct_score()
+    {
+        $this->assertEquals(1, Priority::LOW->score());
+        $this->assertEquals(2, Priority::MEDIUM->score());
+        $this->assertEquals(3, Priority::HIGH->score());
+        $this->assertEquals(4, Priority::CRITICAL->score());
+    }
+
+    /** @test */
+    public function it_can_compare_priorities()
+    {
+        $low = Priority::LOW;
+        $medium = Priority::MEDIUM;
+        $high = Priority::HIGH;
+        $critical = Priority::CRITICAL;
+
+        $this->assertTrue($critical->isHigherThan($high));
+        $this->assertTrue($high->isHigherThan($medium));
+        $this->assertTrue($medium->isHigherThan($low));
+        $this->assertFalse($low->isHigherThan($medium));
+    }
+
+    /** @test */
+    public function it_returns_label()
+    {
+        $this->assertEquals('Low', Priority::LOW->label());
+        $this->assertEquals('Medium', Priority::MEDIUM->label());
+        $this->assertEquals('High', Priority::HIGH->label());
+        $this->assertEquals('Critical', Priority::CRITICAL->label());
+    }
+
+    /** @test */
+    public function it_returns_color()
+    {
+        $this->assertEquals('green', Priority::LOW->color());
+        $this->assertEquals('yellow', Priority::MEDIUM->color());
+        $this->assertEquals('orange', Priority::HIGH->color());
+        $this->assertEquals('red', Priority::CRITICAL->color());
+    }
+}
+```
+
+### ¿Por Qué Unit Tests para Value Objects?
+
+Value Objects son **perfectos para unit testing**:
+- **Sin dependencias** (no DB, no servicios externos)
+- **Funciones puras** (mismo input → mismo output)
+- **Rápidos** (ejecutan en <1ms)
+- **Fáciles de testear** (solo lógica)
+
+---
+
+## 11.5 Unit Tests: Domain Services con Mocking
+
+### Testear TaskStatusManager
+
+**Archivo:** `tests/Unit/Domain/Services/TaskStatusManagerTest.php`
+
+```php
+<?php
+
+namespace Tests\Unit\Domain\Services;
+
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use App\Domain\TaskManagement\Services\TaskStatusManager;
+use App\Domain\TaskManagement\ValueObjects\Status;
+use App\Infrastructure\Persistence\Eloquent\Models\Task;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+class TaskStatusManagerTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private TaskStatusManager $statusManager;
+    private TaskRepositoryInterface $repository;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->repository = app(TaskRepositoryInterface::class);
+        $this->statusManager = new TaskStatusManager($this->repository);
+    }
+
+    /** @test */
+    public function it_allows_valid_status_transition()
+    {
+        // Arrange: Create task with PENDING status
+        $task = Task::factory()->create(['status' => Status::PENDING]);
+
+        // Act: Transition to IN_PROGRESS
+        $result = $this->statusManager->transitionTo($task, Status::IN_PROGRESS);
+
+        // Assert: Transition succeeded
+        $this->assertTrue($result);
+
+        // Verify task was updated in DB
+        $updatedTask = $this->repository->findById($task->id);
+        $this->assertEquals(Status::IN_PROGRESS, $updatedTask->status);
+    }
+
+    /** @test */
+    public function it_rejects_invalid_status_transition()
+    {
+        // Arrange
+        $task = Task::factory()->create(['status' => Status::PENDING]);
+
+        // Assert: Expect exception for invalid transition
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Cannot transition from pending to review');
+
+        // Act: Try invalid transition
+        $this->statusManager->transitionTo($task, Status::REVIEW);
+    }
+
+    /** @test */
+    public function it_prevents_transition_from_completed_status()
+    {
+        // Arrange: Task already completed
+        $task = Task::factory()->create(['status' => Status::COMPLETED]);
+
+        // Assert: Expect exception
+        $this->expectException(\InvalidArgumentException::class);
+
+        // Act: Try to transition from completed
+        $this->statusManager->transitionTo($task, Status::IN_PROGRESS);
+    }
+
+    /** @test */
+    public function it_returns_all_possible_transitions_for_task()
+    {
+        // Arrange
+        $task = Task::factory()->create(['status' => Status::PENDING]);
+
+        // Act
+        $transitions = $this->statusManager->getAvailableTransitions($task);
+
+        // Assert: PENDING can go to IN_PROGRESS or BLOCKED
+        $this->assertContains(Status::IN_PROGRESS, $transitions);
+        $this->assertContains(Status::BLOCKED, $transitions);
+
+        // Assert: PENDING cannot go to REVIEW or COMPLETED
+        $this->assertNotContains(Status::REVIEW, $transitions);
+        $this->assertNotContains(Status::COMPLETED, $transitions);
+    }
+}
+```
+
+### setUp() y tearDown()
+
+```php
+protected function setUp(): void
+{
+    parent::setUp();
+    // Ejecuta ANTES de cada test
+    $this->repository = app(TaskRepositoryInterface::class);
+    $this->statusManager = new TaskStatusManager($this->repository);
+}
+
+protected function tearDown(): void
+{
+    // Ejecuta DESPUÉS de cada test
+    // Limpieza si es necesaria
+    parent::tearDown();
+}
+```
+
+**¿Cuándo usar setUp()?**
+- Inicializar objetos comunes a todos los tests
+- Preparar datos de prueba
+- Configurar mocks
+
+---
+
+## 11.6 Feature Tests: Repositories
+
+### Testear TaskRepository
+
+**Archivo:** `tests/Feature/Repositories/TaskRepositoryTest.php`
+
+```php
+<?php
+
+namespace Tests\Feature\Repositories;
+
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use App\Domain\TaskManagement\ValueObjects\Priority;
+use App\Domain\TaskManagement\ValueObjects\Status;
+use App\Infrastructure\Persistence\Eloquent\Models\Project;
+use App\Infrastructure\Persistence\Eloquent\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+class TaskRepositoryTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private TaskRepositoryInterface $repository;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->repository = app(TaskRepositoryInterface::class);
+    }
+
+    /** @test */
+    public function it_can_create_a_task()
+    {
+        // Arrange: Create required relationships
+        $user = User::factory()->create();
+        $project = Project::factory()->create(['owner_id' => $user->id]);
+
+        $taskData = [
+            'project_id' => $project->id,
+            'title' => 'Test Task',
+            'description' => 'Test Description',
+            'status' => Status::PENDING,
+            'priority' => Priority::MEDIUM,
+            'created_by' => $user->id,
+        ];
+
+        // Act: Create task
+        $task = $this->repository->create($taskData);
+
+        // Assert: Task was created correctly
+        $this->assertNotNull($task);
+        $this->assertEquals('Test Task', $task->title);
+        $this->assertEquals(Status::PENDING, $task->status);
+        $this->assertEquals(Priority::MEDIUM, $task->priority);
+
+        // Verify in database
+        $this->assertDatabaseHas('tasks', [
+            'title' => 'Test Task',
+            'status' => 'pending',
+            'priority' => 'medium',
+        ]);
+    }
+
+    /** @test */
+    public function it_can_find_tasks_by_status()
+    {
+        // Arrange: Create tasks with different statuses
+        $user = User::factory()->create();
+        $project = Project::factory()->create(['owner_id' => $user->id]);
+
+        $this->repository->create([
+            'project_id' => $project->id,
+            'title' => 'Pending Task',
+            'status' => Status::PENDING,
+            'priority' => Priority::LOW,
+            'created_by' => $user->id,
+        ]);
+
+        $this->repository->create([
+            'project_id' => $project->id,
+            'title' => 'Completed Task',
+            'status' => Status::COMPLETED,
+            'priority' => Priority::LOW,
+            'created_by' => $user->id,
+        ]);
+
+        // Act: Find only pending tasks
+        $pendingTasks = $this->repository->findByStatus(Status::PENDING);
+
+        // Assert: Only pending task returned
+        $this->assertCount(1, $pendingTasks);
+        $this->assertEquals('Pending Task', $pendingTasks->first()->title);
+    }
+
+    /** @test */
+    public function it_can_update_task_status()
+    {
+        // Arrange: Create task
+        $user = User::factory()->create();
+        $project = Project::factory()->create(['owner_id' => $user->id]);
+
+        $task = $this->repository->create([
+            'project_id' => $project->id,
+            'title' => 'Test Task',
+            'status' => Status::PENDING,
+            'priority' => Priority::LOW,
+            'created_by' => $user->id,
+        ]);
+
+        // Act: Update status
+        $this->repository->updateStatus($task->id, Status::IN_PROGRESS);
+
+        // Assert: Status was updated
+        $updatedTask = $this->repository->findById($task->id);
+        $this->assertEquals(Status::IN_PROGRESS, $updatedTask->status);
+
+        // Verify in database
+        $this->assertDatabaseHas('tasks', [
+            'id' => $task->id,
+            'status' => 'in_progress',
+        ]);
+    }
+
+    /** @test */
+    public function it_can_assign_task_to_user()
+    {
+        // Arrange
+        $owner = User::factory()->create();
+        $assignee = User::factory()->create();
+        $project = Project::factory()->create(['owner_id' => $owner->id]);
+
+        $task = $this->repository->create([
+            'project_id' => $project->id,
+            'title' => 'Test Task',
+            'status' => Status::PENDING,
+            'priority' => Priority::LOW,
+            'created_by' => $owner->id,
+        ]);
+
+        // Act: Assign task
+        $this->repository->assign($task->id, $assignee->id);
+
+        // Assert: Task assigned
+        $assignedTask = $this->repository->findById($task->id);
+        $this->assertEquals($assignee->id, $assignedTask->assigned_to);
+    }
+
+    /** @test */
+    public function it_can_search_tasks()
+    {
+        // Arrange: Create tasks with searchable content
+        $user = User::factory()->create();
+        $project = Project::factory()->create(['owner_id' => $user->id]);
+
+        $this->repository->create([
+            'project_id' => $project->id,
+            'title' => 'Bug Fix for Login',
+            'status' => Status::PENDING,
+            'priority' => Priority::HIGH,
+            'created_by' => $user->id,
+        ]);
+
+        $this->repository->create([
+            'project_id' => $project->id,
+            'title' => 'Feature: Dashboard',
+            'status' => Status::PENDING,
+            'priority' => Priority::LOW,
+            'created_by' => $user->id,
+        ]);
+
+        // Act: Search for "Login"
+        $results = $this->repository->search('Login');
+
+        // Assert: Only matching task returned
+        $this->assertCount(1, $results);
+        $this->assertEquals('Bug Fix for Login', $results->first()->title);
+    }
+}
+```
+
+### RefreshDatabase Trait
+
+```php
+use RefreshDatabase;
+```
+
+**¿Qué hace?**
+- Ejecuta migraciones **antes de cada test**
+- **Limpia la base de datos después** de cada test
+- Usa **transacciones** (rollback automático)
+- Garantiza tests **independientes** (no afectan entre sí)
+
+**Alternativa: DatabaseMigrations**
+
+```php
+use DatabaseMigrations;  // Ejecuta migraciones, pero más lento
+```
+
+---
+
+## 11.7 Integration Tests: MCP Tools
+
+### Testear CreateTask Tool
+
+**Archivo:** `tests/Integration/Mcp/CreateTaskToolTest.php`
+
+```php
+<?php
+
+namespace Tests\Integration\Mcp;
+
+use App\Infrastructure\Persistence\Eloquent\Models\Project;
+use App\Infrastructure\Persistence\Eloquent\Models\User;
+use App\Mcp\Tools\CreateTask;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Laravel\Mcp\Request;
+use Tests\TestCase;
+
+class CreateTaskToolTest extends TestCase
+{
+    use RefreshDatabase;
+
+    /** @test */
+    public function it_creates_a_task_successfully()
+    {
+        // Arrange: Setup data
+        $user = User::factory()->create();
+        $project = Project::factory()->create(['owner_id' => $user->id]);
+
+        $tool = app(CreateTask::class);
+
+        $request = new Request([
+            'project_id' => $project->id,
+            'title' => 'New Task from MCP',
+            'description' => 'This task was created via MCP',
+            'priority' => 'high',
+            'created_by' => $user->id,
+        ]);
+
+        // Act: Execute tool
+        $response = $tool->handle($request);
+        $data = json_decode($response->content(), true);
+
+        // Assert: Verify response
+        $this->assertTrue($data['success']);
+        $this->assertArrayHasKey('task', $data);
+        $this->assertEquals('New Task from MCP', $data['task']['title']);
+        $this->assertEquals('high', $data['task']['priority']);
+
+        // Assert: Verify in database
+        $this->assertDatabaseHas('tasks', [
+            'title' => 'New Task from MCP',
+            'priority' => 'high',
+        ]);
+    }
+
+    /** @test */
+    public function it_validates_required_fields()
+    {
+        // Arrange
+        $tool = app(CreateTask::class);
+
+        $request = new Request([
+            // Missing required fields (project_id, title)
+            'description' => 'Task without title',
+        ]);
+
+        // Assert: Expect exception for missing fields
+        $this->expectException(\Exception::class);
+
+        // Act: Try to create task
+        $tool->handle($request);
+    }
+
+    /** @test */
+    public function it_creates_task_with_default_priority()
+    {
+        // Arrange
+        $user = User::factory()->create();
+        $project = Project::factory()->create(['owner_id' => $user->id]);
+
+        $tool = app(CreateTask::class);
+
+        $request = new Request([
+            'project_id' => $project->id,
+            'title' => 'Task with default priority',
+            'created_by' => $user->id,
+            // priority not specified
+        ]);
+
+        // Act
+        $response = $tool->handle($request);
+        $data = json_decode($response->content(), true);
+
+        // Assert: Default priority is "medium"
+        $this->assertTrue($data['success']);
+        $this->assertEquals('medium', $data['task']['priority']);
+    }
+
+    /** @test */
+    public function it_can_assign_task_during_creation()
+    {
+        // Arrange
+        $creator = User::factory()->create();
+        $assignee = User::factory()->create();
+        $project = Project::factory()->create(['owner_id' => $creator->id]);
+
+        $tool = app(CreateTask::class);
+
+        $request = new Request([
+            'project_id' => $project->id,
+            'title' => 'Assigned Task',
+            'created_by' => $creator->id,
+            'assigned_to' => $assignee->id,
+        ]);
+
+        // Act
+        $response = $tool->handle($request);
+        $data = json_decode($response->content(), true);
+
+        // Assert: Task assigned correctly
+        $this->assertTrue($data['success']);
+        $this->assertEquals($assignee->name, $data['task']['assigned_to']);
+
+        // Verify in database
+        $this->assertDatabaseHas('tasks', [
+            'title' => 'Assigned Task',
+            'assigned_to' => $assignee->id,
+        ]);
+    }
+}
+```
+
+### Diferencia: Integration vs Unit Tests
+
+| Aspecto | Unit Tests | Integration Tests |
+|---------|------------|-------------------|
+| **Alcance** | Una función/método | Múltiples componentes |
+| **Base de Datos** | ❌ No usa | ✅ Usa (RefreshDatabase) |
+| **Dependencias** | Mockeadas | Reales |
+| **Velocidad** | Rápido (<1ms) | Medio (10-100ms) |
+| **Ejemplo** | Priority->score() | CreateTask tool completo |
+
+---
+
+## 11.8 Assertions Comunes
+
+### Assertions Básicas
+
+```php
+// Igualdad
+$this->assertEquals($expected, $actual);
+$this->assertNotEquals($unexpected, $actual);
+$this->assertSame($expected, $actual);  // Igualdad estricta (===)
+
+// Boolean
+$this->assertTrue($condition);
+$this->assertFalse($condition);
+
+// Null
+$this->assertNull($value);
+$this->assertNotNull($value);
+
+// Strings
+$this->assertStringContainsString('substring', $string);
+$this->assertStringStartsWith('prefix', $string);
+$this->assertStringEndsWith('suffix', $string);
+
+// Arrays
+$this->assertContains($needle, $haystack);
+$this->assertNotContains($needle, $haystack);
+$this->assertCount($expectedCount, $array);
+$this->assertEmpty($array);
+$this->assertNotEmpty($array);
+
+// Arrays con keys
+$this->assertArrayHasKey('key', $array);
+$this->assertArrayNotHasKey('key', $array);
+```
+
+### Assertions de Laravel
+
+```php
+// Database
+$this->assertDatabaseHas('tasks', ['title' => 'Test Task']);
+$this->assertDatabaseMissing('tasks', ['title' => 'Deleted Task']);
+$this->assertDatabaseCount('tasks', 5);
+
+// Soft Deletes
+$this->assertSoftDeleted('tasks', ['id' => 1]);
+
+// Model
+$this->assertModelExists($task);
+$this->assertModelMissing($task);
+```
+
+### Assertions de Excepciones
+
+```php
+// Expect specific exception
+$this->expectException(\InvalidArgumentException::class);
+$this->expectExceptionMessage('Cannot transition');
+
+// Then execute code that should throw
+$this->statusManager->transitionTo($task, Status::REVIEW);
+```
+
+---
+
+## 11.9 Factories (Datos de Prueba)
+
+### ¿Qué son las Factories?
+
+**Factories** generan datos de prueba automáticamente para tests.
+
+### Ejemplo: TaskFactory
+
+```php
+<?php
+
+namespace Database\Factories;
+
+use App\Domain\TaskManagement\ValueObjects\Priority;
+use App\Domain\TaskManagement\ValueObjects\Status;
+use App\Infrastructure\Persistence\Eloquent\Models\Project;
+use App\Infrastructure\Persistence\Eloquent\Models\User;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+class TaskFactory extends Factory
+{
+    protected $model = Task::class;
+
+    public function definition(): array
+    {
+        return [
+            'project_id' => Project::factory(),
+            'assigned_to' => User::factory(),
+            'created_by' => User::factory(),
+            'title' => $this->faker->sentence(),
+            'description' => $this->faker->paragraph(),
+            'status' => $this->faker->randomElement(Status::cases()),
+            'priority' => $this->faker->randomElement(Priority::cases()),
+            'due_date' => $this->faker->dateTimeBetween('now', '+30 days'),
+            'estimated_hours' => $this->faker->numberBetween(1, 40),
+        ];
+    }
+
+    // State: pending
+    public function pending(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'status' => Status::PENDING,
+        ]);
+    }
+
+    // State: high priority
+    public function highPriority(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'priority' => Priority::HIGH,
+        ]);
+    }
+
+    // State: overdue
+    public function overdue(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'due_date' => $this->faker->dateTimeBetween('-30 days', '-1 day'),
+            'status' => Status::PENDING,
+        ]);
+    }
+}
+```
+
+### Uso de Factories
+
+```php
+// Crear task con datos aleatorios
+$task = Task::factory()->create();
+
+// Crear task con datos específicos
+$task = Task::factory()->create([
+    'title' => 'Custom Title',
+    'priority' => Priority::CRITICAL,
+]);
+
+// Usar states
+$task = Task::factory()->pending()->create();
+$task = Task::factory()->highPriority()->overdue()->create();
+
+// Crear múltiples tasks
+$tasks = Task::factory()->count(10)->create();
+
+// Crear sin guardar en DB (make)
+$task = Task::factory()->make();  // No guarda en DB
+```
+
+### ¿Por Qué Usar Factories?
+
+**❌ Sin factories:**
+
+```php
+$user = User::create([
+    'name' => 'Test User',
+    'email' => 'test@example.com',
+    'password' => bcrypt('password'),
+    'email_verified_at' => now(),
+]);
+
+$project = Project::create([
+    'owner_id' => $user->id,
+    'name' => 'Test Project',
+    'description' => 'Test description',
+    'status' => 'active',
+]);
+
+$task = Task::create([
+    'project_id' => $project->id,
+    'created_by' => $user->id,
+    'title' => 'Test Task',
+    'status' => Status::PENDING,
+    'priority' => Priority::MEDIUM,
+]);
+```
+
+**✅ Con factories:**
+
+```php
+$task = Task::factory()->create();
+// Todo lo demás se genera automáticamente (user, project, etc.)
+```
+
+---
+
+## 11.10 Ejecutar Tests
+
+### Comando Básico
+
+```bash
+# Ejecutar todos los tests
+php artisan test
+
+# Output:
+#  PASS  Tests\Unit\Domain\ValueObjects\StatusTest
+#  ✓ it can check valid transitions
+#  ✓ completed status can be reopened
+#  ✓ it returns available transitions
+#
+#  Tests:  45 passed
+#  Time:   0.52s
+```
+
+### Filtrar Tests
+
+```bash
+# Ejecutar solo un archivo
+php artisan test tests/Unit/Domain/ValueObjects/StatusTest.php
+
+# Ejecutar solo tests con nombre específico
+php artisan test --filter it_can_check_valid_transitions
+
+# Ejecutar solo Unit tests
+php artisan test tests/Unit
+
+# Ejecutar solo Feature tests
+php artisan test tests/Feature
+```
+
+### Opciones Útiles
+
+```bash
+# Con coverage (requiere Xdebug)
+php artisan test --coverage
+
+# Modo verbose (más detalles)
+php artisan test --verbose
+
+# Parar en primer fallo
+php artisan test --stop-on-failure
+
+# Parallel testing (más rápido)
+php artisan test --parallel
+```
+
+---
+
+## 11.11 Mocking (Simulación de Dependencias)
+
+### ¿Qué es Mocking?
+
+**Mocking** simula comportamiento de dependencias externas para tests aislados.
+
+### Ejemplo: Mockear OpenAI Service
+
+```php
+<?php
+
+namespace Tests\Unit\Mcp\Tools;
+
+use App\Domain\AIIntegration\Services\OpenAIService;
+use App\Mcp\Tools\GenerateTaskDescription;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Laravel\Mcp\Request;
+use Mockery;
+use Tests\TestCase;
+
+class GenerateTaskDescriptionTest extends TestCase
+{
+    use RefreshDatabase;
+
+    /** @test */
+    public function it_generates_description_using_openai()
+    {
+        // Arrange: Mock OpenAI service
+        $openAIMock = Mockery::mock(OpenAIService::class);
+        $openAIMock->shouldReceive('complete')
+            ->once()
+            ->with(Mockery::type('string'), Mockery::type('array'))
+            ->andReturn('AI-generated description here');
+
+        // Bind mock to container
+        $this->app->instance(OpenAIService::class, $openAIMock);
+
+        // Create task
+        $task = Task::factory()->create(['title' => 'Test Task']);
+
+        // Get tool with mock
+        $tool = app(GenerateTaskDescription::class);
+
+        $request = new Request(['task_id' => $task->id]);
+
+        // Act
+        $response = $tool->handle($request);
+        $data = json_decode($response->content(), true);
+
+        // Assert
+        $this->assertTrue($data['success']);
+        $this->assertEquals('AI-generated description here', $data['generated_description']);
+    }
+}
+```
+
+### ¿Por Qué Mockear?
+
+**Sin mocking:**
+- Necesitas API key de OpenAI real
+- Tests lentos (llamadas HTTP)
+- Costos (cada test llama a OpenAI)
+- Tests frágiles (dependen de servicio externo)
+
+**Con mocking:**
+- ✅ No necesitas API key
+- ✅ Tests rápidos (sin HTTP)
+- ✅ Sin costos
+- ✅ Tests confiables
+
+---
+
+## 11.12 Resumen del Capítulo
+
+### Conceptos Clave
+
+1. **3 Tipos de Tests**:
+   - Unit: Funciones aisladas, rápidos
+   - Feature/Integration: Componentes juntos, con DB
+   - E2E: Flujo completo como usuario
+
+2. **AAA Pattern**:
+   - Arrange: Preparar
+   - Act: Ejecutar
+   - Assert: Verificar
+
+3. **RefreshDatabase**:
+   - Limpia DB después de cada test
+   - Tests independientes
+
+4. **Factories**:
+   - Generan datos de prueba
+   - Reducen código boilerplate
+
+5. **Mocking**:
+   - Simula dependencias externas
+   - Tests aislados y rápidos
+
+### Best Practices
+
+```php
+// ✅ DO: Tests descriptivos
+public function it_rejects_invalid_status_transition()
+
+// ❌ DON'T: Tests genéricos
+public function test1()
+
+// ✅ DO: Un assert por concepto
+$this->assertTrue($pending->canTransitionTo($inProgress));
+$this->assertFalse($pending->canTransitionTo($review));
+
+// ❌ DON'T: Muchos asserts mezclados
+$this->assertTrue($a);
+$this->assertEquals($b, $c);
+$this->assertContains($d, $e);
+
+// ✅ DO: Use factories
+$task = Task::factory()->create();
+
+// ❌ DON'T: Manual creation
+$task = new Task();
+$task->title = 'test';
+$task->save();
+
+// ✅ DO: Test one thing
+public function it_creates_task()  // Only test creation
+
+// ❌ DON'T: Test multiple things
+public function it_creates_and_updates_and_deletes_task()
+```
+
+### Comandos Importantes
+
+```bash
+# Ejecutar todos los tests
+php artisan test
+
+# Ejecutar con coverage
+php artisan test --coverage
+
+# Ejecutar tests en paralelo (más rápido)
+php artisan test --parallel
+
+# Ejecutar solo un archivo
+php artisan test tests/Unit/Domain/ValueObjects/StatusTest.php
+```
+
+---
+
+**Próximo**: Capítulo 12 - Conclusión y Próximos Pasos
+
+---
+
+**Estado del Tutorial:** Capítulos 1-11 de 15 completados ✓
