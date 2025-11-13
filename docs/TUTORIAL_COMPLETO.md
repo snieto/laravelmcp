@@ -3292,3 +3292,1182 @@ En el Capítulo 4 profundizaremos en **Value Objects**, viendo cómo crearlos, u
 ---
 
 **Estado del Tutorial:** Capítulos 1-3 de 15 completados ✓
+
+
+# Capítulo 4: Value Objects en Profundidad
+
+## 4.1 ¿Qué es un Value Object?
+
+Un **Value Object** es un concepto fundamental en Domain-Driven Design (DDD) que representa un valor inmutable que:
+
+1. **No tiene identidad propia** - Se identifica por sus atributos, no por un ID
+2. **Es inmutable** - Una vez creado, no puede cambiar
+3. **Encapsula comportamiento** - No es solo un contenedor de datos
+4. **Se compara por valor** - Dos Value Objects son iguales si sus atributos son iguales
+
+### 🔍 Analogía del Mundo Real
+
+Piensa en una **moneda de $100 pesos**:
+
+```
+🪙 Billete #123456 de $100
+🪙 Billete #789012 de $100
+```
+
+¿Son iguales? **Sí**, para ti valen lo mismo aunque tengan números de serie diferentes. No te importa *cuál* billete tienes, solo su **valor**. Eso es un Value Object.
+
+Compare con una **Entity** (Entidad):
+
+```
+👤 Juan Pérez (ID: 1234)
+👤 Juan Pérez (ID: 5678)
+```
+
+¿Son iguales? **No**, aunque tengan el mismo nombre, son personas diferentes con identidades únicas. Eso es una Entity.
+
+### 📊 Value Object vs Entity
+
+| Característica | Value Object | Entity |
+|---------------|--------------|--------|
+| **Identidad** | No tiene ID | Tiene ID único |
+| **Igualdad** | Por valor de atributos | Por ID |
+| **Mutabilidad** | Inmutable | Puede cambiar |
+| **Ejemplo** | Status, Priority, Email, Money | Task, User, Project |
+
+## 4.2 Value Objects en Nuestro Proyecto
+
+En **TaskMaster AI** tenemos dos Value Objects principales:
+
+1. **Status** - El estado de una tarea (pending, in_progress, review, completed, blocked)
+2. **Priority** - La prioridad de una tarea (low, medium, high, critical)
+
+Ambos están implementados como **PHP 8.1+ Enums**, que son la forma moderna y type-safe de crear Value Objects.
+
+### 📁 Ubicación en el Proyecto
+
+```
+app/Domain/TaskManagement/ValueObjects/
+├── Status.php      # 127 líneas - Estado del ciclo de vida
+└── Priority.php    # 131 líneas - Nivel de prioridad
+```
+
+## 4.3 Status Value Object - Análisis Completo
+
+### 4.3.1 Código Completo Comentado
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Domain\TaskManagement\ValueObjects;
+
+/**
+ * Status Value Object
+ *
+ * Representa el estado de una tarea en el ciclo de vida.
+ * Inmutable y type-safe usando PHP 8.1+ enums.
+ */
+enum Status: string  // ← Backed enum con valores string
+{
+    // ═══════════════════════════════════════════════════════════
+    // 📌 CASOS DEL ENUM (los 5 estados posibles)
+    // ═══════════════════════════════════════════════════════════
+
+    case PENDING = 'pending';           // Tarea creada, sin empezar
+    case IN_PROGRESS = 'in_progress';   // Alguien trabajando en ella
+    case REVIEW = 'review';             // Esperando revisión
+    case COMPLETED = 'completed';       // Tarea finalizada
+    case BLOCKED = 'blocked';           // Bloqueada por algún impedimento
+
+    // ═══════════════════════════════════════════════════════════
+    // 🏷️ MÉTODO: label() - Nombre legible en español
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Obtiene el nombre legible del estado
+     */
+    public function label(): string
+    {
+        return match($this) {
+            self::PENDING => 'Pendiente',
+            self::IN_PROGRESS => 'En Progreso',
+            self::REVIEW => 'En Revisión',
+            self::COMPLETED => 'Completada',
+            self::BLOCKED => 'Bloqueada',
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 🎨 MÉTODO: color() - Color para la interfaz de usuario
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Obtiene el color para UI
+     */
+    public function color(): string
+    {
+        return match($this) {
+            self::PENDING => 'gray',      // Gris - sin empezar
+            self::IN_PROGRESS => 'blue',  // Azul - en trabajo
+            self::REVIEW => 'yellow',     // Amarillo - esperando
+            self::COMPLETED => 'green',   // Verde - terminado
+            self::BLOCKED => 'red',       // Rojo - problema
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ✅ MÉTODO: canTransitionTo() - Reglas de transición
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Verifica si puede transicionar a otro estado
+     *
+     * Esta es LÓGICA DE NEGOCIO - Define las reglas del ciclo
+     * de vida de una tarea.
+     */
+    public function canTransitionTo(self $newStatus): bool
+    {
+        return match($this) {
+            // PENDING → Solo puede ir a IN_PROGRESS o BLOCKED
+            self::PENDING => in_array($newStatus, [
+                self::IN_PROGRESS,  // Alguien empieza a trabajar
+                self::BLOCKED,      // Se bloquea sin empezar
+            ]),
+
+            // IN_PROGRESS → Puede ir a REVIEW, BLOCKED, o volver a PENDING
+            self::IN_PROGRESS => in_array($newStatus, [
+                self::REVIEW,       // Termina y pide revisión
+                self::BLOCKED,      // Se encuentra un bloqueador
+                self::PENDING,      // Se devuelve (no era el momento)
+            ]),
+
+            // REVIEW → Puede COMPLETARSE, volver a IN_PROGRESS, o BLOQUEARSE
+            self::REVIEW => in_array($newStatus, [
+                self::COMPLETED,    // Revisión aprobada ✓
+                self::IN_PROGRESS,  // Requiere cambios, vuelve a trabajo
+                self::BLOCKED,      // Se encuentra problema en revisión
+            ]),
+
+            // COMPLETED → Solo puede REABRIRSE a IN_PROGRESS
+            self::COMPLETED => in_array($newStatus, [
+                self::IN_PROGRESS,  // Reabrir tarea (nueva funcionalidad)
+            ]),
+
+            // BLOCKED → Puede desbloquearse a PENDING o IN_PROGRESS
+            self::BLOCKED => in_array($newStatus, [
+                self::PENDING,      // Se desbloquea pero nadie la retoma
+                self::IN_PROGRESS,  // Se desbloquea y se retoma trabajo
+            ]),
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 📋 MÉTODO: availableTransitions() - Estados disponibles
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Obtiene las transiciones disponibles desde este estado
+     *
+     * @return array<self>
+     */
+    public function availableTransitions(): array
+    {
+        $transitions = [];
+
+        // Itera sobre TODOS los casos del enum
+        foreach (self::cases() as $status) {
+            // Si es una transición válida, agrégala
+            if ($this->canTransitionTo($status)) {
+                $transitions[] = $status;
+            }
+        }
+
+        return $transitions;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 🏁 MÉTODO: isFinal() - ¿Es un estado final?
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Verifica si la tarea está en un estado final
+     */
+    public function isFinal(): bool
+    {
+        // Solo COMPLETED es considerado final
+        // (aunque puede reabrirse)
+        return $this === self::COMPLETED;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 🔄 MÉTODO: isActive() - ¿Está en trabajo activo?
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Verifica si la tarea está activa (en trabajo)
+     */
+    public function isActive(): bool
+    {
+        return in_array($this, [
+            self::IN_PROGRESS,  // Alguien trabajando
+            self::REVIEW,       // Esperando feedback
+        ]);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 📦 MÉTODO: toArray() - Para formularios y selects
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Obtiene todos los estados como array asociativo
+     *
+     * @return array<string, string>
+     */
+    public static function toArray(): array
+    {
+        $result = [];
+        foreach (self::cases() as $status) {
+            $result[$status->value] = $status->label();
+        }
+        return $result;
+
+        // Retorna algo como:
+        // [
+        //     'pending' => 'Pendiente',
+        //     'in_progress' => 'En Progreso',
+        //     ...
+        // ]
+    }
+}
+```
+
+### 4.3.2 Diagrama del Ciclo de Vida
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              📊 CICLO DE VIDA DE UNA TAREA                  │
+└─────────────────────────────────────────────────────────────┘
+
+        ┌──────────────┐
+        │   PENDING    │ ← Tarea creada
+        │  (Pendiente) │
+        └──────┬───────┘
+               │
+               │ Alguien empieza
+               ▼
+        ┌──────────────┐
+    ┌──▶│ IN_PROGRESS  │──┐
+    │   │(En Progreso) │  │
+    │   └──────┬───────┘  │
+    │          │          │
+    │   Termina│          │ Se encuentra
+    │          ▼          │ un bloqueador
+    │   ┌──────────────┐  │
+    │   │    REVIEW    │  │
+    │   │ (En Revisión)│  │
+    │   └──────┬───────┘  │
+    │          │          │
+    │   Aprueba│          │
+    │          ▼          ▼
+    │   ┌──────────────┐  ┌──────────────┐
+    │   │  COMPLETED   │  │   BLOCKED    │
+    │   │ (Completada) │  │  (Bloqueada) │
+    │   └──────┬───────┘  └──────┬───────┘
+    │          │                 │
+    └──────────┘                 └─────────▶ PENDING
+         Reabrir                  Desbloquear
+
+Leyenda:
+─────▶  Transición normal
+═════▶  Transición especial
+```
+
+### 4.3.3 Ejemplos de Uso
+
+#### **Ejemplo 1: Validar transiciones**
+
+```php
+use App\Domain\TaskManagement\ValueObjects\Status;
+
+// Crear una tarea en estado PENDING
+$currentStatus = Status::PENDING;
+
+// ✅ Transición VÁLIDA
+if ($currentStatus->canTransitionTo(Status::IN_PROGRESS)) {
+    echo "✓ Puedes empezar a trabajar";
+}
+
+// ❌ Transición INVÁLIDA
+if (!$currentStatus->canTransitionTo(Status::COMPLETED)) {
+    echo "✗ No puedes completar una tarea sin trabajarla";
+}
+```
+
+#### **Ejemplo 2: Obtener transiciones disponibles**
+
+```php
+$status = Status::REVIEW;
+
+$available = $status->availableTransitions();
+// Retorna: [Status::COMPLETED, Status::IN_PROGRESS, Status::BLOCKED]
+
+foreach ($available as $nextStatus) {
+    echo "Puedes cambiar a: " . $nextStatus->label();
+}
+
+// Salida:
+// Puedes cambiar a: Completada
+// Puedes cambiar a: En Progreso
+// Puedes cambiar a: Bloqueada
+```
+
+#### **Ejemplo 3: Usar en UI (Blade/Livewire)**
+
+```php
+<!-- resources/views/livewire/task-card.blade.php -->
+
+<div class="task-card">
+    <span class="badge bg-{{ $task->status->color() }}">
+        {{ $task->status->label() }}
+    </span>
+
+    @if($task->status->isActive())
+        <span class="pulse-indicator">●</span>
+    @endif
+
+    @if($task->status->isFinal())
+        <span class="checkmark">✓</span>
+    @endif
+</div>
+```
+
+#### **Ejemplo 4: Validación en MCP Tool**
+
+```php
+// app/MCP/Presentation/TaskTools/UpdateTask.php
+
+public function handle(array $params): array
+{
+    $task = $this->repository->findById($params['id']);
+
+    if (isset($params['status'])) {
+        $newStatus = Status::from($params['status']);
+
+        // ✅ VALIDAR la transición antes de aplicar
+        if (!$task->status->canTransitionTo($newStatus)) {
+            throw new InvalidStatusTransitionException(
+                "No puedes cambiar de {$task->status->label()} " .
+                "a {$newStatus->label()}"
+            );
+        }
+
+        $task->status = $newStatus;
+    }
+
+    $this->repository->update($task);
+
+    return ['success' => true, 'task' => $task];
+}
+```
+
+## 4.4 Priority Value Object - Análisis Completo
+
+### 4.4.1 Código Completo Comentado
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Domain\TaskManagement\ValueObjects;
+
+/**
+ * Priority Value Object
+ *
+ * Representa la prioridad de una tarea.
+ * Inmutable y type-safe usando PHP 8.1+ enums.
+ */
+enum Priority: string
+{
+    // ═══════════════════════════════════════════════════════════
+    // 📌 CASOS DEL ENUM (las 4 prioridades)
+    // ═══════════════════════════════════════════════════════════
+
+    case LOW = 'low';           // Prioridad baja
+    case MEDIUM = 'medium';     // Prioridad media
+    case HIGH = 'high';         // Prioridad alta
+    case CRITICAL = 'critical'; // Prioridad crítica
+
+    // ═══════════════════════════════════════════════════════════
+    // 🏷️ MÉTODO: label() - Nombre legible en español
+    // ═══════════════════════════════════════════════════════════
+
+    public function label(): string
+    {
+        return match($this) {
+            self::LOW => 'Baja',
+            self::MEDIUM => 'Media',
+            self::HIGH => 'Alta',
+            self::CRITICAL => 'Crítica',
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 🎨 MÉTODO: color() - Color para UI
+    // ═══════════════════════════════════════════════════════════
+
+    public function color(): string
+    {
+        return match($this) {
+            self::LOW => 'gray',        // Gris - no urgente
+            self::MEDIUM => 'blue',     // Azul - normal
+            self::HIGH => 'orange',     // Naranja - importante
+            self::CRITICAL => 'red',    // Rojo - urgente
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 🔢 MÉTODO: score() - Valor numérico para ordenamiento
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Obtiene el score numérico de la prioridad (para ordenamiento)
+     */
+    public function score(): int
+    {
+        return match($this) {
+            self::LOW => 1,
+            self::MEDIUM => 2,
+            self::HIGH => 3,
+            self::CRITICAL => 4,
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ⚖️ MÉTODO: compare() - Comparar dos prioridades
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Compara esta prioridad con otra
+     *
+     * @return int -1 si es menor, 0 si es igual, 1 si es mayor
+     */
+    public function compare(self $other): int
+    {
+        return $this->score() <=> $other->score();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 📊 MÉTODOS: Comparaciones booleanas
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Verifica si esta prioridad es mayor que otra
+     */
+    public function isHigherThan(self $other): bool
+    {
+        return $this->score() > $other->score();
+    }
+
+    /**
+     * Verifica si esta prioridad es menor que otra
+     */
+    public function isLowerThan(self $other): bool
+    {
+        return $this->score() < $other->score();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ⚠️ MÉTODO: requiresImmediateAttention()
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Verifica si requiere atención inmediata
+     *
+     * LÓGICA DE NEGOCIO: Solo HIGH y CRITICAL son urgentes
+     */
+    public function requiresImmediateAttention(): bool
+    {
+        return in_array($this, [self::HIGH, self::CRITICAL]);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 😀 MÉTODO: emoji() - Representación visual
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Obtiene el emoji representativo
+     */
+    public function emoji(): string
+    {
+        return match($this) {
+            self::LOW => '🔵',
+            self::MEDIUM => '🟡',
+            self::HIGH => '🟠',
+            self::CRITICAL => '🔴',
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 📦 MÉTODOS ESTÁTICOS: Utilidades
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Obtiene todas las prioridades como array asociativo
+     *
+     * @return array<string, string>
+     */
+    public static function toArray(): array
+    {
+        $result = [];
+        foreach (self::cases() as $priority) {
+            $result[$priority->value] = $priority->label();
+        }
+        return $result;
+    }
+
+    /**
+     * Obtiene las prioridades ordenadas por score
+     *
+     * @return array<self>
+     */
+    public static function ordered(): array
+    {
+        $priorities = self::cases();
+        usort($priorities, fn($a, $b) => $a->score() <=> $b->score());
+        return $priorities;
+    }
+}
+```
+
+### 4.4.2 Ejemplos de Uso
+
+#### **Ejemplo 1: Comparar prioridades**
+
+```php
+use App\Domain\TaskManagement\ValueObjects\Priority;
+
+$taskA = Priority::HIGH;
+$taskB = Priority::MEDIUM;
+
+if ($taskA->isHigherThan($taskB)) {
+    echo "Task A tiene mayor prioridad";
+}
+
+// Comparación de 3 vías
+$result = $taskA->compare($taskB);
+// Retorna 1 (taskA es mayor que taskB)
+```
+
+#### **Ejemplo 2: Ordenar tareas por prioridad**
+
+```php
+// Colección de tareas
+$tasks = [
+    ['name' => 'Fix bug', 'priority' => Priority::CRITICAL],
+    ['name' => 'Code review', 'priority' => Priority::MEDIUM],
+    ['name' => 'Refactor', 'priority' => Priority::LOW],
+    ['name' => 'Deploy', 'priority' => Priority::HIGH],
+];
+
+// Ordenar por score de prioridad (mayor primero)
+usort($tasks, function($a, $b) {
+    return $b['priority']->score() <=> $a['priority']->score();
+});
+
+// Resultado:
+// 1. Fix bug (CRITICAL - 4)
+// 2. Deploy (HIGH - 3)
+// 3. Code review (MEDIUM - 2)
+// 4. Refactor (LOW - 1)
+```
+
+#### **Ejemplo 3: Filtrar tareas urgentes**
+
+```php
+$tasks = Task::all();
+
+// Filtrar solo tareas urgentes
+$urgentTasks = $tasks->filter(function($task) {
+    return $task->priority->requiresImmediateAttention();
+});
+
+// Retorna solo tareas con prioridad HIGH o CRITICAL
+```
+
+#### **Ejemplo 4: Dashboard de prioridades**
+
+```php
+<!-- resources/views/livewire/priority-dashboard.blade.php -->
+
+<div class="priority-grid">
+    @foreach(Priority::ordered() as $priority)
+        <div class="priority-column">
+            <h3>
+                <span class="emoji">{{ $priority->emoji() }}</span>
+                {{ $priority->label() }}
+            </h3>
+
+            @php
+                $count = $tasks->where('priority', $priority)->count();
+            @endphp
+
+            <div class="count badge bg-{{ $priority->color() }}">
+                {{ $count }} tareas
+            </div>
+
+            @if($priority->requiresImmediateAttention())
+                <span class="urgent-badge">⚠️ URGENTE</span>
+            @endif
+        </div>
+    @endforeach
+</div>
+```
+
+## 4.5 Ventajas de los Value Objects
+
+### 1. **Type Safety (Seguridad de Tipos)**
+
+**❌ Sin Value Objects (código frágil):**
+
+```php
+// Cualquier string es válido → PELIGROSO
+function updateTaskStatus(int $taskId, string $status)
+{
+    // ¿Qué pasa si alguien pasa 'pendiente' en vez de 'pending'?
+    // ¿O 'done' en vez de 'completed'?
+    // ¡ERROR EN RUNTIME!
+
+    $task = Task::find($taskId);
+    $task->status = $status;  // No hay validación
+    $task->save();
+}
+
+// Llamadas problemáticas:
+updateTaskStatus(1, 'pendiente');  // ❌ Typo
+updateTaskStatus(1, 'PENDING');    // ❌ Case incorrecto
+updateTaskStatus(1, 'done');       // ❌ Valor inválido
+```
+
+**✅ Con Value Objects (código robusto):**
+
+```php
+// Solo valores válidos del enum son permitidos
+function updateTaskStatus(int $taskId, Status $status)
+{
+    $task = Task::find($taskId);
+    $task->status = $status;
+    $task->save();
+}
+
+// Solo estas llamadas son posibles:
+updateTaskStatus(1, Status::PENDING);      // ✓
+updateTaskStatus(1, Status::IN_PROGRESS);  // ✓
+
+// Estas ni siquiera compilan:
+updateTaskStatus(1, 'pending');    // ❌ TypeError
+updateTaskStatus(1, 'done');       // ❌ TypeError
+```
+
+### 2. **Lógica de Negocio Encapsulada**
+
+**❌ Sin Value Objects (lógica dispersa):**
+
+```php
+// La lógica de transición está DUPLICADA en múltiples lugares
+
+// En el Controller:
+if ($task->status === 'pending' && $newStatus === 'completed') {
+    throw new Exception("No puedes completar sin trabajarla");
+}
+
+// En el MCP Tool:
+if ($task->status === 'pending' && $newStatus === 'completed') {
+    throw new Exception("No puedes completar sin trabajarla");
+}
+
+// En el Job:
+if ($task->status === 'pending' && $newStatus === 'completed') {
+    throw new Exception("No puedes completar sin trabajarla");
+}
+
+// 🚨 PROBLEMA: Si cambian las reglas, tienes que actualizar 10 lugares
+```
+
+**✅ Con Value Objects (lógica centralizada):**
+
+```php
+// La lógica está EN UN SOLO LUGAR
+
+// En cualquier parte del código:
+if (!$task->status->canTransitionTo($newStatus)) {
+    throw new InvalidTransitionException(
+        "No puedes cambiar de {$task->status->label()} " .
+        "a {$newStatus->label()}"
+    );
+}
+
+// ✅ Si cambian las reglas, solo modificas Status.php
+```
+
+### 3. **Código Autodocumentado**
+
+**❌ Sin Value Objects:**
+
+```php
+// ¿Qué significa este 3?
+$task->priority = 3;
+
+// ¿Y este string?
+$task->status = 'in_progress';
+
+// Tienes que ir a la documentación o base de datos para saberlo
+```
+
+**✅ Con Value Objects:**
+
+```php
+// Es obvio qué significa
+$task->priority = Priority::HIGH;
+$task->status = Status::IN_PROGRESS;
+
+// El código se lee como lenguaje natural (Ubiquitous Language)
+```
+
+### 4. **Refactoring Seguro**
+
+**❌ Sin Value Objects:**
+
+```php
+// Si quieres renombrar 'in_progress' → 'working'
+// Tienes que buscar TODOS los strings en TODO el código
+// Y esperar no romper nada
+
+// ¿Cuántos lugares hay que cambiar? ¿100? ¿200?
+```
+
+**✅ Con Value Objects:**
+
+```php
+// Solo cambias el valor del enum:
+enum Status: string
+{
+    case IN_PROGRESS = 'working';  // ← Un solo cambio
+}
+
+// TODO el código sigue funcionando porque usa Status::IN_PROGRESS
+```
+
+### 5. **Prevención de Errores**
+
+```php
+// ❌ Sin Value Objects - Error silencioso
+$task->status = 'inprogress';  // Typo → tarea queda en estado inválido
+$task->save();                  // No hay error, pero la data está corrupta
+
+// ✅ Con Value Objects - Error explícito
+$task->status = Status::from('inprogress');  // ← ValueError inmediato
+// "inprogress is not a valid backing value for enum Status"
+```
+
+## 4.6 Cómo Eloquent Usa los Value Objects
+
+### 4.6.1 Casting Automático
+
+Laravel Eloquent puede convertir automáticamente entre strings en la base de datos y Value Objects en tu código:
+
+```php
+// app/Infrastructure/TaskManagement/Models/Task.php
+
+class Task extends Model
+{
+    protected $casts = [
+        'status' => Status::class,     // ← Casting automático
+        'priority' => Priority::class, // ← Casting automático
+    ];
+}
+```
+
+**¿Cómo funciona?**
+
+```php
+// 1. GUARDAR en base de datos
+$task = new Task();
+$task->status = Status::IN_PROGRESS;  // ← Value Object
+$task->save();
+
+// Eloquent automáticamente convierte:
+// Status::IN_PROGRESS → 'in_progress' (string en DB)
+
+// 2. LEER desde base de datos
+$task = Task::find(1);
+
+// Eloquent automáticamente convierte:
+// 'in_progress' (string en DB) → Status::IN_PROGRESS (Value Object)
+
+echo $task->status->label();  // "En Progreso"
+```
+
+### 4.6.2 Consultas con Value Objects
+
+```php
+// Puedes usar Value Objects directamente en queries
+
+// Buscar tareas pendientes
+$tasks = Task::where('status', Status::PENDING)->get();
+
+// Buscar tareas con prioridad alta o crítica
+$urgentTasks = Task::whereIn('priority', [
+    Priority::HIGH,
+    Priority::CRITICAL
+])->get();
+
+// Eloquent convierte automáticamente:
+// Priority::HIGH → 'high'
+// Priority::CRITICAL → 'critical'
+```
+
+## 4.7 Testing de Value Objects
+
+### 4.7.1 Test de Status
+
+```php
+// tests/Unit/Domain/ValueObjects/StatusTest.php
+
+use App\Domain\TaskManagement\ValueObjects\Status;
+use PHPUnit\Framework\TestCase;
+
+class StatusTest extends TestCase
+{
+    /** @test */
+    public function it_has_correct_labels()
+    {
+        $this->assertEquals('Pendiente', Status::PENDING->label());
+        $this->assertEquals('En Progreso', Status::IN_PROGRESS->label());
+        $this->assertEquals('Completada', Status::COMPLETED->label());
+    }
+
+    /** @test */
+    public function it_validates_transitions_correctly()
+    {
+        $pending = Status::PENDING;
+
+        // Transiciones válidas desde PENDING
+        $this->assertTrue($pending->canTransitionTo(Status::IN_PROGRESS));
+        $this->assertTrue($pending->canTransitionTo(Status::BLOCKED));
+
+        // Transiciones inválidas desde PENDING
+        $this->assertFalse($pending->canTransitionTo(Status::REVIEW));
+        $this->assertFalse($pending->canTransitionTo(Status::COMPLETED));
+    }
+
+    /** @test */
+    public function completed_tasks_can_be_reopened()
+    {
+        $completed = Status::COMPLETED;
+
+        // Puede reabrirse
+        $this->assertTrue($completed->canTransitionTo(Status::IN_PROGRESS));
+
+        // Pero no puede ir a otros estados
+        $this->assertFalse($completed->canTransitionTo(Status::PENDING));
+        $this->assertFalse($completed->canTransitionTo(Status::REVIEW));
+    }
+
+    /** @test */
+    public function it_returns_available_transitions()
+    {
+        $review = Status::REVIEW;
+        $transitions = $review->availableTransitions();
+
+        $this->assertCount(3, $transitions);
+        $this->assertContains(Status::COMPLETED, $transitions);
+        $this->assertContains(Status::IN_PROGRESS, $transitions);
+        $this->assertContains(Status::BLOCKED, $transitions);
+    }
+
+    /** @test */
+    public function it_identifies_final_status()
+    {
+        $this->assertTrue(Status::COMPLETED->isFinal());
+        $this->assertFalse(Status::PENDING->isFinal());
+        $this->assertFalse(Status::IN_PROGRESS->isFinal());
+    }
+
+    /** @test */
+    public function it_identifies_active_status()
+    {
+        $this->assertTrue(Status::IN_PROGRESS->isActive());
+        $this->assertTrue(Status::REVIEW->isActive());
+        $this->assertFalse(Status::PENDING->isActive());
+        $this->assertFalse(Status::COMPLETED->isActive());
+    }
+}
+```
+
+### 4.7.2 Test de Priority
+
+```php
+// tests/Unit/Domain/ValueObjects/PriorityTest.php
+
+use App\Domain\TaskManagement\ValueObjects\Priority;
+use PHPUnit\Framework\TestCase;
+
+class PriorityTest extends TestCase
+{
+    /** @test */
+    public function it_has_correct_scores()
+    {
+        $this->assertEquals(1, Priority::LOW->score());
+        $this->assertEquals(2, Priority::MEDIUM->score());
+        $this->assertEquals(3, Priority::HIGH->score());
+        $this->assertEquals(4, Priority::CRITICAL->score());
+    }
+
+    /** @test */
+    public function it_compares_priorities_correctly()
+    {
+        $low = Priority::LOW;
+        $high = Priority::HIGH;
+
+        $this->assertTrue($high->isHigherThan($low));
+        $this->assertTrue($low->isLowerThan($high));
+        $this->assertFalse($low->isHigherThan($high));
+    }
+
+    /** @test */
+    public function it_identifies_urgent_priorities()
+    {
+        $this->assertTrue(Priority::HIGH->requiresImmediateAttention());
+        $this->assertTrue(Priority::CRITICAL->requiresImmediateAttention());
+        $this->assertFalse(Priority::MEDIUM->requiresImmediateAttention());
+        $this->assertFalse(Priority::LOW->requiresImmediateAttention());
+    }
+
+    /** @test */
+    public function it_returns_ordered_priorities()
+    {
+        $ordered = Priority::ordered();
+
+        $this->assertCount(4, $ordered);
+        $this->assertEquals(Priority::LOW, $ordered[0]);
+        $this->assertEquals(Priority::MEDIUM, $ordered[1]);
+        $this->assertEquals(Priority::HIGH, $ordered[2]);
+        $this->assertEquals(Priority::CRITICAL, $ordered[3]);
+    }
+}
+```
+
+## 4.8 Cuándo Crear un Value Object
+
+### ✅ Deberías crear un Value Object cuando:
+
+1. **Tiene validaciones propias**
+   - Email (debe tener formato email)
+   - PhoneNumber (debe tener formato válido)
+   - Money (debe tener currency y amount)
+
+2. **Tiene comportamiento de negocio**
+   - Status (reglas de transición)
+   - Priority (comparaciones)
+   - DateRange (contains, overlaps)
+
+3. **Es usado en múltiples lugares**
+   - Si usas el mismo conjunto de validaciones en 3+ lugares
+   - Si la lógica se repite
+
+4. **Representa un concepto del dominio**
+   - Color (hex, rgb, hsl conversions)
+   - Coordinates (latitude, longitude)
+   - Address (street, city, zip)
+
+### ❌ NO necesitas un Value Object cuando:
+
+1. **Es solo un string simple sin validación**
+   - `$task->title` → Solo un string
+   - `$user->name` → Solo un string
+
+2. **No tiene comportamiento**
+   - `$product->description` → Solo texto
+   - `$post->content` → Solo markdown
+
+3. **Es usado en un solo lugar**
+   - Un string que solo validas una vez
+   - No hay lógica compartida
+
+## 4.9 Creando Tu Propio Value Object
+
+### Ejemplo: EmailAddress Value Object
+
+```php
+<?php
+
+namespace App\Domain\Shared\ValueObjects;
+
+class EmailAddress
+{
+    private string $value;
+
+    public function __construct(string $email)
+    {
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            throw new \InvalidArgumentException(
+                "'{$email}' no es un email válido"
+            );
+        }
+
+        $this->value = strtolower($email);
+    }
+
+    public function value(): string
+    {
+        return $this->value;
+    }
+
+    public function domain(): string
+    {
+        return substr($this->value, strpos($this->value, '@') + 1);
+    }
+
+    public function localPart(): string
+    {
+        return substr($this->value, 0, strpos($this->value, '@'));
+    }
+
+    public function equals(self $other): bool
+    {
+        return $this->value === $other->value;
+    }
+
+    public function __toString(): string
+    {
+        return $this->value;
+    }
+}
+```
+
+**Uso:**
+
+```php
+$email = new EmailAddress('juan@example.com');
+
+echo $email->value();      // "juan@example.com"
+echo $email->domain();     // "example.com"
+echo $email->localPart();  // "juan"
+
+// Inmutabilidad
+$email->value = 'otro@mail.com';  // ❌ Error - propiedad privada
+
+// Comparación por valor
+$email1 = new EmailAddress('test@mail.com');
+$email2 = new EmailAddress('test@mail.com');
+$email1->equals($email2);  // true
+```
+
+## 4.10 Ejercicios Prácticos
+
+### Ejercicio 1: Extender Status
+
+Agrega un nuevo método `timeInStatus()` que retorne el tiempo promedio que una tarea pasa en ese estado:
+
+```php
+// Tu implementación:
+public function averageTimeInStatus(): int
+{
+    return match($this) {
+        self::PENDING => 48,        // 48 horas promedio
+        self::IN_PROGRESS => 72,    // 72 horas promedio
+        self::REVIEW => 24,         // 24 horas promedio
+        self::COMPLETED => 0,       // No aplica
+        self::BLOCKED => ???,       // ← ¿Cuánto debería ser?
+    };
+}
+```
+
+### Ejercicio 2: Crear Difficulty Value Object
+
+Crea un nuevo Value Object `Difficulty` con los casos: TRIVIAL, EASY, MEDIUM, HARD, EXPERT
+
+Debe tener:
+- `label()`: Nombre en español
+- `estimatedHours()`: Horas estimadas (1, 4, 8, 16, 40)
+- `requiredExperience()`: Nivel requerido (junior, mid, senior, expert)
+- `color()`: Color para UI
+
+### Ejercicio 3: DateRange Value Object
+
+Crea un Value Object para rangos de fechas:
+
+```php
+class DateRange
+{
+    public function __construct(
+        private Carbon $start,
+        private Carbon $end
+    ) {
+        if ($start->isAfter($end)) {
+            throw new \InvalidArgumentException(
+                "Start date must be before end date"
+            );
+        }
+    }
+
+    public function contains(Carbon $date): bool
+    {
+        // TODO: Implementar
+    }
+
+    public function overlaps(self $other): bool
+    {
+        // TODO: Implementar
+    }
+
+    public function durationInDays(): int
+    {
+        // TODO: Implementar
+    }
+}
+```
+
+## 4.11 Resumen del Capítulo 4
+
+🎯 **Conceptos Clave Aprendidos:**
+
+1. **Value Objects** son objetos inmutables identificados por su valor
+   - No tienen ID único
+   - Se comparan por sus atributos
+   - Encapsulan comportamiento
+
+2. **PHP 8.1+ Enums** son perfectos para Value Objects
+   - Type-safe y modernos
+   - Backed enums con valores string/int
+   - Métodos personalizados con lógica de negocio
+
+3. **Status Value Object** controla el ciclo de vida
+   - 5 estados: PENDING, IN_PROGRESS, REVIEW, COMPLETED, BLOCKED
+   - Validación de transiciones
+   - Métodos de consulta (isFinal, isActive)
+
+4. **Priority Value Object** maneja urgencia
+   - 4 niveles: LOW, MEDIUM, HIGH, CRITICAL
+   - Comparaciones (isHigherThan, isLowerThan)
+   - Score numérico para ordenamiento
+
+5. **Ventajas sobre strings/ints simples**
+   - Type safety (errores en compile-time)
+   - Lógica centralizada
+   - Código autodocumentado
+   - Refactoring seguro
+
+6. **Eloquent Casting** integra Value Objects
+   - Conversión automática DB ↔ Value Object
+   - Uso directo en queries
+   - Sin código boilerplate
+
+🔜 **Próximo Capítulo:**
+En el Capítulo 5 exploraremos el **Patrón Repository**, viendo cómo abstraer el acceso a datos y mantener el Domain Layer independiente de la tecnología de persistencia.
+
+---
+
+**Estado del Tutorial:** Capítulos 1-4 de 15 completados ✓
