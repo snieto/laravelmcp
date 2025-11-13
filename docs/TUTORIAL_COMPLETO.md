@@ -8197,3 +8197,1477 @@ En el Capítulo 8 exploraremos **AIAssistantServer**, viendo cómo integrar IA g
 ---
 
 **Estado del Tutorial:** Capítulos 1-7 de 15 completados ✓
+
+---
+
+# Capítulo 8: AIAssistantServer - Herramientas con Inteligencia Artificial
+
+## 8.1 ¿Qué es el AIAssistantServer?
+
+El `AIAssistantServer` es un MCP Server especializado que aprovecha la **Inteligencia Artificial (OpenAI GPT-4)** para potenciar la gestión de tareas. Mientras que `TaskToolsServer` (Capítulo 7) se enfoca en operaciones CRUD básicas, este servidor proporciona **capacidades inteligentes** que ayudan a los usuarios a:
+
+- Generar descripciones técnicas detalladas automáticamente
+- Mejorar títulos de tareas para hacerlos más claros y accionables
+- Calcular prioridades óptimas basadas en múltiples factores
+- Analizar productividad del equipo e identificar cuellos de botella
+
+### Analogía: Asistente Personal Inteligente
+
+Imagina que tienes un **asistente personal experto** que:
+
+1. **Escritor Técnico** → Escribe descripciones detalladas cuando le das solo un título
+2. **Editor Profesional** → Mejora tus títulos para que sean más claros
+3. **Analista de Prioridades** → Evalúa qué tareas son urgentes considerando múltiples factores
+4. **Consultor de Productividad** → Analiza el rendimiento del equipo y sugiere mejoras
+
+Eso es exactamente lo que hace el `AIAssistantServer`.
+
+### Diferencia con TaskToolsServer
+
+| Aspecto | TaskToolsServer (Cap 7) | AIAssistantServer (Cap 8) |
+|---------|-------------------------|---------------------------|
+| **Propósito** | CRUD operations | AI-powered assistance |
+| **Tipo de tareas** | Create, Read, Update, Delete | Generate, Analyze, Suggest, Improve |
+| **Tecnología** | Laravel + Eloquent | Laravel + OpenAI GPT-4 |
+| **Dependencias** | Repository pattern | Repository + Domain Services + AI |
+| **Ejemplos** | create_task, list_tasks | generate_description, analyze_productivity |
+
+---
+
+## 8.2 Anatomía del AIAssistantServer
+
+Veamos el código completo del servidor:
+
+```php
+<?php
+
+namespace App\Mcp\Servers;
+
+use App\Mcp\Tools\AnalyzeProductivity;
+use App\Mcp\Tools\GenerateTaskDescription;
+use App\Mcp\Tools\ImproveTaskTitle;
+use App\Mcp\Tools\SuggestPriority;
+use Laravel\Mcp\Server;
+
+class AIAssistantServer extends Server
+{
+    protected string $name = 'TaskMaster AI - AI Assistant';
+
+    protected string $version = '1.0.0';
+
+    protected string $instructions = <<<'MARKDOWN'
+        # TaskMaster AI - AI Assistant
+
+        This MCP server provides AI-powered assistance for task management using OpenAI's GPT models.
+
+        ## Available Tools
+
+        - **generate_task_description**: Generate comprehensive technical descriptions for tasks
+        - **improve_task_title**: Improve task titles to be more clear and actionable
+        - **suggest_priority**: Calculate optimal task priority based on multiple factors
+        - **analyze_productivity**: Analyze team productivity and identify bottlenecks
+
+        ## Features
+
+        1. **AI-Generated Content**: Uses GPT-4 to generate high-quality task descriptions
+        2. **Smart Prioritization**: Analyzes due dates, complexity, and activity to suggest priorities
+        3. **Productivity Insights**: Identifies bottlenecks and provides actionable recommendations
+        4. **Title Optimization**: Improves task titles following best practices
+
+        ## Requirements
+
+        - OpenAI API key must be configured in OPENAI_API_KEY environment variable
+        - Default model: gpt-4-turbo-preview (configurable via OPENAI_DEFAULT_MODEL)
+    MARKDOWN;
+
+    protected array $tools = [
+        GenerateTaskDescription::class,
+        ImproveTaskTitle::class,
+        SuggestPriority::class,
+        AnalyzeProductivity::class,
+    ];
+
+    protected array $resources = [];
+
+    protected array $prompts = [];
+}
+```
+
+### Elementos Clave del Servidor
+
+#### 1. **Metadata del Servidor**
+
+```php
+protected string $name = 'TaskMaster AI - AI Assistant';
+protected string $version = '1.0.0';
+```
+
+- **Name**: Identifica este servidor como especializado en IA
+- **Version**: Semantic versioning para control de cambios
+
+#### 2. **Instructions (Críticas para el LLM)**
+
+Las instrucciones le dicen a Claude (o cualquier LLM) **cómo y cuándo usar estas herramientas**:
+
+```markdown
+## Features
+
+1. **AI-Generated Content**: Uses GPT-4 to generate high-quality task descriptions
+2. **Smart Prioritization**: Analyzes due dates, complexity, and activity to suggest priorities
+3. **Productivity Insights**: Identifies bottlenecks and provides actionable recommendations
+4. **Title Optimization**: Improves task titles following best practices
+
+## Requirements
+
+- OpenAI API key must be configured in OPENAI_API_KEY environment variable
+```
+
+**¿Por qué son importantes?**
+
+- Claude lee estas instrucciones y aprende que estas herramientas requieren OpenAI API key
+- Si el usuario no tiene API key configurada, Claude puede advertirle antes de intentar usar las herramientas
+- Las instrucciones explican claramente **qué hace cada herramienta** y **cuándo usarla**
+
+#### 3. **Tools Array (4 Herramientas AI)**
+
+```php
+protected array $tools = [
+    GenerateTaskDescription::class,  // AI: Generate descriptions
+    ImproveTaskTitle::class,         // AI: Improve titles
+    SuggestPriority::class,          // AI-powered: Calculate priority
+    AnalyzeProductivity::class,      // AI: Analyze productivity
+];
+```
+
+Estas 4 herramientas representan las **4 capacidades inteligentes** del servidor.
+
+---
+
+## 8.3 Herramienta 1: GenerateTaskDescription
+
+### Propósito
+
+Generar una **descripción técnica detallada** para una tarea que solo tiene un título básico.
+
+### Código Completo (78 líneas)
+
+```php
+<?php
+
+namespace App\Mcp\Tools;
+
+use App\Domain\AIIntegration\Services\TaskDescriptionGenerator;
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use Illuminate\JsonSchema\JsonSchema;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
+use Laravel\Mcp\Server\Tool;
+
+class GenerateTaskDescription extends Tool
+{
+    protected string $description = <<<'MARKDOWN'
+        Generate a detailed AI-powered description for a task.
+        Requires OpenAI API key to be configured.
+        Returns a comprehensive technical description with approach, challenges, and expected outcome.
+    MARKDOWN;
+
+    public function __construct(
+        private readonly TaskDescriptionGenerator $descriptionGenerator,
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {
+    }
+
+    public function handle(Request $request): Response
+    {
+        $taskId = $request->input('task_id');
+        $task = $this->taskRepository->findById($taskId);
+
+        if (!$task) {
+            return Response::json([
+                'success' => false,
+                'error' => "Task #{$taskId} not found",
+            ]);
+        }
+
+        try {
+            $generatedDescription = $this->descriptionGenerator->generate($task);
+
+            return Response::json([
+                'success' => true,
+                'task_id' => $task->id,
+                'task_title' => $task->title,
+                'original_description' => $task->description,
+                'generated_description' => $generatedDescription,
+                'message' => 'AI-generated description created successfully',
+            ]);
+        } catch (\Exception $e) {
+            return Response::json([
+                'success' => false,
+                'error' => 'Failed to generate description: '.$e->getMessage(),
+                'hint' => 'Make sure OPENAI_API_KEY is configured in .env',
+            ]);
+        }
+    }
+
+    public function schema(JsonSchema $schema): array
+    {
+        return [
+            'task_id' => $schema->integer()
+                ->description('The ID of the task to generate description for')
+                ->minimum(1)
+                ->required(),
+        ];
+    }
+}
+```
+
+### Análisis Línea por Línea
+
+#### Dependency Injection (líneas 20-26)
+
+```php
+public function __construct(
+    private readonly TaskDescriptionGenerator $descriptionGenerator,
+    private readonly TaskRepositoryInterface $taskRepository
+) {
+}
+```
+
+**Inyecta 2 dependencias:**
+
+1. **TaskDescriptionGenerator**: Domain Service (Capítulo 6) que encapsula la lógica de IA
+2. **TaskRepositoryInterface**: Repository para obtener el task
+
+**¿Por qué no llamar directamente a OpenAI?**
+
+❌ **Mal enfoque**:
+```php
+// Acoplamiento directo a OpenAI
+$client = new OpenAI\Client($apiKey);
+$response = $client->completions()->create([...]);
+```
+
+✅ **Buen enfoque**:
+```php
+// Abstracción mediante Domain Service
+$description = $this->descriptionGenerator->generate($task);
+```
+
+**Ventajas:**
+- **Testeable**: Puedes mockear `TaskDescriptionGenerator` en tests
+- **Reutilizable**: Otros lugares pueden usar el mismo servicio
+- **Mantenible**: Si cambias de OpenAI a otro provider, solo modificas el Domain Service
+
+#### Handle Method (líneas 28-62)
+
+**Paso 1: Obtener Task (líneas 31-35)**
+
+```php
+$taskId = $request->input('task_id');
+$task = $this->taskRepository->findById($taskId);
+
+if (!$task) {
+    return Response::json([
+        'success' => false,
+        'error' => "Task #{$taskId} not found",
+    ]);
+}
+```
+
+- Busca el task por ID
+- Retorna error 404 si no existe
+
+**Paso 2: Generar Descripción con IA (líneas 37-55)**
+
+```php
+try {
+    $generatedDescription = $this->descriptionGenerator->generate($task);
+
+    return Response::json([
+        'success' => true,
+        'task_id' => $task->id,
+        'task_title' => $task->title,
+        'original_description' => $task->description,
+        'generated_description' => $generatedDescription,
+        'message' => 'AI-generated description created successfully',
+    ]);
+} catch (\Exception $e) {
+    return Response::json([
+        'success' => false,
+        'error' => 'Failed to generate description: '.$e->getMessage(),
+        'hint' => 'Make sure OPENAI_API_KEY is configured in .env',
+    ]);
+}
+```
+
+**Manejo de Errores Robusto:**
+
+- Si OpenAI falla (API key inválida, rate limit, error de red), captura la excepción
+- Retorna error con **hint útil** para el usuario
+
+**¿Qué hace `generate()` internamente?** (del Domain Service, Capítulo 6):
+
+```php
+// Simplified from TaskDescriptionGenerator
+public function generate(Task $task): string
+{
+    if (!$this->openAIService->isAvailable()) {
+        return $this->generateFallbackDescription($task);
+    }
+
+    $prompt = $this->promptBuilder->buildTaskDescriptionPrompt($task);
+
+    return $this->openAIService->complete($prompt, [
+        'temperature' => 0.7,
+        'max_tokens' => 800,
+    ]);
+}
+```
+
+- Construye un prompt específico para generación de descripciones
+- Llama a OpenAI con temperatura 0.7 (balance creatividad/consistencia)
+- Máximo 800 tokens de respuesta
+
+#### JSON Schema (líneas 64-71)
+
+```php
+public function schema(JsonSchema $schema): array
+{
+    return [
+        'task_id' => $schema->integer()
+            ->description('The ID of the task to generate description for')
+            ->minimum(1)
+            ->required(),
+    ];
+}
+```
+
+**Schema simple:**
+
+- Solo requiere `task_id` (integer >= 1)
+- La IA hace el resto del trabajo
+
+### Flujo Completo
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    GenerateTaskDescription Tool                  │
+└─────────────────────────────────────────────────────────────────┘
+
+User asks Claude:
+"Generate a description for task #42"
+           │
+           ▼
+Claude calls MCP Tool:
+{
+  "name": "generate_task_description",
+  "arguments": { "task_id": 42 }
+}
+           │
+           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 1. Schema Validation                                             │
+│    ✓ task_id is integer                                          │
+│    ✓ task_id >= 1                                                │
+└──────────────────────────────────────────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 2. Find Task                                                     │
+│    Repository: findById(42)                                      │
+│    Result: Task object                                           │
+└──────────────────────────────────────────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 3. Generate Description (Domain Service)                        │
+│                                                                   │
+│    TaskDescriptionGenerator:                                     │
+│    ┌────────────────────────────────────────────────────┐       │
+│    │ a) Check OpenAI availability                       │       │
+│    │ b) Build prompt with PromptBuilder                 │       │
+│    │ c) Call OpenAI API (GPT-4)                         │       │
+│    │ d) Return generated text                           │       │
+│    └────────────────────────────────────────────────────┘       │
+└──────────────────────────────────────────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 4. Return Response                                               │
+│    {                                                              │
+│      "success": true,                                            │
+│      "task_id": 42,                                              │
+│      "task_title": "Implement user authentication",             │
+│      "original_description": "Add login feature",               │
+│      "generated_description": "Implement a secure user          │
+│        authentication system with the following components:     │
+│        1. Login/logout endpoints with JWT tokens                │
+│        2. Password hashing with bcrypt                          │
+│        3. Rate limiting to prevent brute force attacks          │
+│        4. Session management with Redis                         │
+│        Expected outcome: Users can securely log in..."          │
+│    }                                                              │
+└──────────────────────────────────────────────────────────────────┘
+           │
+           ▼
+Claude shows result to user:
+"I've generated a detailed description for task #42..."
+```
+
+### Ejemplo de Uso Real
+
+**Conversación con Claude:**
+
+```
+User: Task #42 has the title "Implement user authentication"
+      but no description. Can you generate one?
+
+Claude: I'll generate a detailed description for task #42 using AI.
+        [Calls generate_task_description tool with task_id: 42]
+
+Tool Response:
+{
+  "success": true,
+  "generated_description": "Implement a secure user authentication system
+    with the following components:
+
+    1. **Login/Logout Endpoints**
+       - POST /api/auth/login: Accept email/password, return JWT token
+       - POST /api/auth/logout: Invalidate JWT token
+
+    2. **Password Security**
+       - Use bcrypt with cost factor 12 for password hashing
+       - Implement password strength validation (min 8 chars, 1 uppercase, 1 number)
+
+    3. **Security Measures**
+       - Rate limiting: 5 login attempts per 15 minutes per IP
+       - JWT tokens expire after 24 hours
+       - Refresh tokens for seamless re-authentication
+
+    4. **Session Management**
+       - Store active sessions in Redis for fast lookup
+       - Implement logout from all devices feature
+
+    **Expected Outcome**: Users can securely log in and access protected
+    resources. Failed login attempts are logged and rate-limited."
+}
+
+Claude: I've generated a comprehensive technical description for task #42.
+        The description includes security best practices, implementation
+        details for endpoints, password handling, rate limiting, and session
+        management. Would you like me to update the task with this description?
+```
+
+---
+
+## 8.4 Herramienta 2: ImproveTaskTitle
+
+### Propósito
+
+Mejorar títulos de tareas para que sean **más claros, accionables y sigan mejores prácticas**.
+
+### Código Completo (80 líneas)
+
+```php
+<?php
+
+namespace App\Mcp\Tools;
+
+use App\Domain\AIIntegration\Services\TaskDescriptionGenerator;
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use Illuminate\JsonSchema\JsonSchema;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
+use Laravel\Mcp\Server\Tool;
+
+class ImproveTaskTitle extends Tool
+{
+    protected string $description = <<<'MARKDOWN'
+        Use AI to improve a task title to be more clear, actionable, and follow best practices.
+        The AI considers the task description and context to suggest a better title.
+    MARKDOWN;
+
+    public function __construct(
+        private readonly TaskDescriptionGenerator $descriptionGenerator,
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {
+    }
+
+    public function handle(Request $request): Response
+    {
+        $taskId = $request->input('task_id');
+        $task = $this->taskRepository->findById($taskId);
+
+        if (!$task) {
+            return Response::json([
+                'success' => false,
+                'error' => "Task #{$taskId} not found",
+            ]);
+        }
+
+        try {
+            $improvedTitle = $this->descriptionGenerator->improveTitle($task);
+
+            // Clean up the response (remove quotes if present)
+            $improvedTitle = trim($improvedTitle, '"\'');
+
+            return Response::json([
+                'success' => true,
+                'task_id' => $task->id,
+                'original_title' => $task->title,
+                'improved_title' => $improvedTitle,
+                'apply' => false,
+                'message' => 'AI-improved title generated. Set apply=true to update the task.',
+            ]);
+        } catch (\Exception $e) {
+            return Response::json([
+                'success' => false,
+                'error' => 'Failed to improve title: '.$e->getMessage(),
+                'hint' => 'Make sure OPENAI_API_KEY is configured in .env',
+            ]);
+        }
+    }
+
+    public function schema(JsonSchema $schema): array
+    {
+        return [
+            'task_id' => $schema->integer()
+                ->description('The ID of the task to improve the title for')
+                ->minimum(1)
+                ->required(),
+        ];
+    }
+}
+```
+
+### Características Especiales
+
+#### 1. **Limpieza de Respuesta (líneas 40-41)**
+
+```php
+$improvedTitle = $this->descriptionGenerator->improveTitle($task);
+
+// Clean up the response (remove quotes if present)
+$improvedTitle = trim($improvedTitle, '"\'');
+```
+
+**¿Por qué es necesario?**
+
+A veces OpenAI retorna títulos con comillas:
+- Input: `"Fix bug in login"`
+- Output: `"Resolve authentication failure in login endpoint"`
+
+La limpieza remueve las comillas para tener un título limpio.
+
+#### 2. **Modo Preview (línea 47)**
+
+```php
+'apply' => false,
+'message' => 'AI-improved title generated. Set apply=true to update the task.',
+```
+
+**Patrón de diseño importante:**
+
+- Por defecto, **solo sugiere** el título mejorado, no lo aplica
+- El usuario puede revisar la sugerencia antes de aplicarla
+- Si el usuario quiere aplicarlo, necesitaría usar `update_task` del TaskToolsServer
+
+**Flujo completo:**
+
+```
+1. User: "Improve title for task #42"
+   → Tool returns: { "improved_title": "...", "apply": false }
+
+2. Claude shows: "Here's the improved title: '...'. Would you like me to apply it?"
+
+3. User: "Yes, apply it"
+   → Claude calls update_task with new title
+```
+
+### Ejemplo de Uso
+
+**Antes:**
+
+```
+Task #42: "login stuff"
+```
+
+**Llamada a ImproveTaskTitle:**
+
+```json
+{
+  "name": "improve_task_title",
+  "arguments": { "task_id": 42 }
+}
+```
+
+**Respuesta:**
+
+```json
+{
+  "success": true,
+  "task_id": 42,
+  "original_title": "login stuff",
+  "improved_title": "Implement secure user authentication with JWT tokens",
+  "apply": false,
+  "message": "AI-improved title generated. Set apply=true to update the task."
+}
+```
+
+**Después (si el usuario acepta):**
+
+```
+Task #42: "Implement secure user authentication with JWT tokens"
+```
+
+### ¿Qué hace `improveTitle()` internamente?
+
+```php
+// Simplified from TaskDescriptionGenerator (Domain Service)
+public function improveTitle(Task $task): string
+{
+    if (!$this->openAIService->isAvailable()) {
+        return $this->generateFallbackTitle($task);
+    }
+
+    $prompt = $this->promptBuilder->buildTitleImprovementPrompt($task);
+
+    return $this->openAIService->complete($prompt, [
+        'temperature' => 0.5, // Lower temperature for consistency
+        'max_tokens' => 100,  // Titles are short
+    ]);
+}
+```
+
+**Prompt ejemplo:**
+
+```
+Improve the following task title to be more clear and actionable:
+
+Current title: "login stuff"
+Description: "Add user authentication to the system"
+
+Provide a single improved title that:
+1. Is clear and specific
+2. Starts with an action verb (Implement, Fix, Add, etc.)
+3. Is concise (under 10 words)
+4. Follows task management best practices
+
+Improved title:
+```
+
+**OpenAI responde:**
+
+```
+"Implement secure user authentication with JWT tokens"
+```
+
+---
+
+## 8.5 Herramienta 3: SuggestPriority
+
+### Propósito
+
+Calcular y sugerir una **prioridad óptima** para una tarea basándose en múltiples factores cuantitativos.
+
+### Código Completo (104 líneas)
+
+```php
+<?php
+
+namespace App\Mcp\Tools;
+
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use App\Domain\TaskManagement\Services\TaskPriorityCalculator;
+use Illuminate\JsonSchema\JsonSchema;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
+use Laravel\Mcp\Server\Tool;
+
+class SuggestPriority extends Tool
+{
+    protected string $description = <<<'MARKDOWN'
+        Calculate and suggest an optimal priority for a task based on multiple factors:
+        - Due date urgency
+        - Current priority
+        - Task complexity (estimated hours)
+        - Activity level (number of comments)
+
+        Returns suggested priority with explanation.
+    MARKDOWN;
+
+    public function __construct(
+        private readonly TaskPriorityCalculator $priorityCalculator,
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {
+    }
+
+    public function handle(Request $request): Response
+    {
+        $taskId = $request->input('task_id');
+        $task = $this->taskRepository->findById($taskId);
+
+        if (!$task) {
+            return Response::json([
+                'success' => false,
+                'error' => "Task #{$taskId} not found",
+            ]);
+        }
+
+        $suggestedPriority = $this->priorityCalculator->calculateSuggestedPriority($task);
+        $currentPriority = $task->priority;
+
+        // Build explanation
+        $factors = [];
+
+        if ($task->due_date) {
+            $daysUntil = now()->diffInDays($task->due_date, false);
+            if ($daysUntil < 0) {
+                $factors[] = "Task is overdue by ".abs($daysUntil).' days';
+            } elseif ($daysUntil <= 1) {
+                $factors[] = 'Task is due very soon (within 24 hours)';
+            } elseif ($daysUntil <= 3) {
+                $factors[] = 'Task is due soon (within 3 days)';
+            }
+        }
+
+        if ($task->estimated_hours && $task->estimated_hours >= 20) {
+            $factors[] = 'Large task ('.$task->estimated_hours.' estimated hours)';
+        }
+
+        if ($task->comments()->count() > 5) {
+            $factors[] = 'High activity ('.$task->comments()->count().' comments)';
+        }
+
+        $shouldEscalate = $suggestedPriority->score() > $currentPriority->score();
+
+        return Response::json([
+            'success' => true,
+            'task_id' => $task->id,
+            'task_title' => $task->title,
+            'current_priority' => $currentPriority->value,
+            'suggested_priority' => $suggestedPriority->value,
+            'should_escalate' => $shouldEscalate,
+            'priority_change' => $shouldEscalate ? 'increase' : ($suggestedPriority->score() < $currentPriority->score() ? 'decrease' : 'no change'),
+            'factors' => $factors,
+            'explanation' => $shouldEscalate
+                ? "Consider escalating this task to {$suggestedPriority->value} priority based on the factors above."
+                : "Current priority level seems appropriate for this task.",
+        ]);
+    }
+
+    public function schema(JsonSchema $schema): array
+    {
+        return [
+            'task_id' => $schema->integer()
+                ->description('The ID of the task to analyze')
+                ->minimum(1)
+                ->required(),
+        ];
+    }
+}
+```
+
+### Análisis Detallado
+
+#### 1. **Algoritmo de Cálculo (TaskPriorityCalculator)**
+
+```php
+$suggestedPriority = $this->priorityCalculator->calculateSuggestedPriority($task);
+```
+
+**¿Qué hace este Domain Service?** (117 líneas, ya vimos en la lectura)
+
+```php
+public function calculateSuggestedPriority(Task $task): Priority
+{
+    $score = 0;
+
+    // Factor 1: Due date urgency (0-4 points)
+    if ($task->due_date) {
+        $daysUntilDue = Carbon::now()->diffInDays($task->due_date, false);
+
+        if ($daysUntilDue < 0) {
+            $score += 4;  // Overdue
+        } elseif ($daysUntilDue <= 1) {
+            $score += 3;  // Due today/tomorrow
+        } elseif ($daysUntilDue <= 3) {
+            $score += 2;  // Due within 3 days
+        } elseif ($daysUntilDue <= 7) {
+            $score += 1;  // Due within a week
+        }
+    }
+
+    // Factor 2: Current priority score (0-3 points)
+    $score += $task->priority->score();
+    // LOW=0, MEDIUM=1, HIGH=2, CRITICAL=3
+
+    // Factor 3: Task complexity (0-2 points)
+    if ($task->estimated_hours) {
+        if ($task->estimated_hours >= 20) {
+            $score += 2;  // Large task
+        } elseif ($task->estimated_hours >= 10) {
+            $score += 1;  // Medium task
+        }
+    }
+
+    // Factor 4: Activity level (0-1 point)
+    if ($task->comments()->count() > 5) {
+        $score += 1;  // High activity
+    }
+
+    // Convert score to priority
+    return $this->scoreToPriority($score);
+}
+
+private function scoreToPriority(int $score): Priority
+{
+    return match (true) {
+        $score >= 8 => Priority::CRITICAL,
+        $score >= 5 => Priority::HIGH,
+        $score >= 3 => Priority::MEDIUM,
+        default => Priority::LOW,
+    };
+}
+```
+
+**Sistema de Puntuación:**
+
+| Score Range | Priority | Example Scenario |
+|-------------|----------|-----------------|
+| 0-2 | LOW | Far future, small task |
+| 3-4 | MEDIUM | Due next week, medium task |
+| 5-7 | HIGH | Due in 3 days, large task |
+| 8+ | CRITICAL | Overdue, complex, high activity |
+
+**Ejemplo de cálculo:**
+
+```
+Task: "Implement user authentication"
+- due_date: tomorrow (+3 points)
+- current priority: MEDIUM (+1 point)
+- estimated_hours: 25 (+2 points)
+- comments: 7 (+1 point)
+────────────────────────────────────
+Total Score: 7 points → HIGH priority
+```
+
+#### 2. **Construcción de Factores (líneas 45-64)**
+
+```php
+$factors = [];
+
+if ($task->due_date) {
+    $daysUntil = now()->diffInDays($task->due_date, false);
+    if ($daysUntil < 0) {
+        $factors[] = "Task is overdue by ".abs($daysUntil).' days';
+    } elseif ($daysUntil <= 1) {
+        $factors[] = 'Task is due very soon (within 24 hours)';
+    } elseif ($daysUntil <= 3) {
+        $factors[] = 'Task is due soon (within 3 days)';
+    }
+}
+
+if ($task->estimated_hours && $task->estimated_hours >= 20) {
+    $factors[] = 'Large task ('.$task->estimated_hours.' estimated hours)';
+}
+
+if ($task->comments()->count() > 5) {
+    $factors[] = 'High activity ('.$task->comments()->count().' comments)';
+}
+```
+
+**Propósito:**
+
+- Construir un **array de explicaciones legibles** para el usuario
+- Transparencia: el usuario entiende **por qué** se sugiere una prioridad específica
+
+#### 3. **Respuesta con Recomendación (líneas 66-81)**
+
+```php
+$shouldEscalate = $suggestedPriority->score() > $currentPriority->score();
+
+return Response::json([
+    'success' => true,
+    'task_id' => $task->id,
+    'task_title' => $task->title,
+    'current_priority' => $currentPriority->value,
+    'suggested_priority' => $suggestedPriority->value,
+    'should_escalate' => $shouldEscalate,
+    'priority_change' => $shouldEscalate ? 'increase' : (...),
+    'factors' => $factors,
+    'explanation' => $shouldEscalate
+        ? "Consider escalating this task to {$suggestedPriority->value} priority based on the factors above."
+        : "Current priority level seems appropriate for this task.",
+]);
+```
+
+**Información rica:**
+
+- **current_priority**: Prioridad actual
+- **suggested_priority**: Prioridad sugerida
+- **should_escalate**: Boolean que indica si debería aumentar
+- **priority_change**: "increase", "decrease", o "no change"
+- **factors**: Array de razones específicas
+- **explanation**: Texto explicativo para el usuario
+
+### Ejemplo de Uso Real
+
+**Conversación:**
+
+```
+User: Check if task #42 needs a priority change
+
+Claude: I'll analyze task #42 to suggest an optimal priority.
+        [Calls suggest_priority tool with task_id: 42]
+
+Tool Response:
+{
+  "success": true,
+  "task_id": 42,
+  "task_title": "Implement user authentication",
+  "current_priority": "medium",
+  "suggested_priority": "high",
+  "should_escalate": true,
+  "priority_change": "increase",
+  "factors": [
+    "Task is due soon (within 3 days)",
+    "Large task (25 estimated hours)",
+    "High activity (7 comments)"
+  ],
+  "explanation": "Consider escalating this task to high priority based on the factors above."
+}
+
+Claude: Based on my analysis, task #42 should be escalated to HIGH priority.
+        Here's why:
+
+        • The task is due in 3 days
+        • It's a large task with 25 estimated hours
+        • There's high activity with 7 comments
+
+        Would you like me to update the task priority to HIGH?
+```
+
+---
+
+## 8.6 Herramienta 4: AnalyzeProductivity
+
+### Propósito
+
+Analizar métricas de productividad del equipo, identificar cuellos de botella y proporcionar recomendaciones con IA.
+
+### Código Completo (86 líneas)
+
+```php
+<?php
+
+namespace App\Mcp\Tools;
+
+use App\Domain\AIIntegration\Services\ProductivityAnalyzer;
+use App\Domain\Analytics\Services\MetricsCollector;
+use Carbon\Carbon;
+use Illuminate\JsonSchema\JsonSchema;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
+use Laravel\Mcp\Server\Tool;
+
+class AnalyzeProductivity extends Tool
+{
+    protected string $description = <<<'MARKDOWN'
+        Analyze team productivity metrics using AI.
+        Provides insights, identifies bottlenecks, and suggests improvements.
+        Optionally specify a time period (default: last 7 days).
+    MARKDOWN;
+
+    public function __construct(
+        private readonly ProductivityAnalyzer $productivityAnalyzer,
+        private readonly MetricsCollector $metricsCollector
+    ) {
+    }
+
+    public function handle(Request $request): Response
+    {
+        $days = $request->input('days', 7);
+        $endDate = Carbon::now();
+        $startDate = $endDate->copy()->subDays($days);
+
+        try {
+            // Collect metrics
+            $metrics = $this->metricsCollector->collectMetrics($startDate, $endDate);
+
+            // Analyze with AI
+            $analysis = $this->productivityAnalyzer->analyze($metrics);
+
+            // Identify bottlenecks
+            $tasksArray = $metrics['tasks'] ?? [];
+            $bottlenecks = $this->productivityAnalyzer->identifyBottlenecks($tasksArray);
+
+            return Response::json([
+                'success' => true,
+                'period' => [
+                    'days' => $days,
+                    'start' => $startDate->toDateString(),
+                    'end' => $endDate->toDateString(),
+                ],
+                'metrics' => $metrics,
+                'ai_analysis' => $analysis,
+                'bottlenecks' => $bottlenecks,
+            ]);
+        } catch (\Exception $e) {
+            return Response::json([
+                'success' => false,
+                'error' => 'Failed to analyze productivity: '.$e->getMessage(),
+                'hint' => 'Make sure OPENAI_API_KEY is configured in .env',
+            ]);
+        }
+    }
+
+    public function schema(JsonSchema $schema): array
+    {
+        return [
+            'days' => $schema->integer()
+                ->description('Number of days to analyze (default: 7)')
+                ->minimum(1)
+                ->maximum(90)
+                ->default(7)
+                ->optional(),
+        ];
+    }
+}
+```
+
+### Análisis Detallado
+
+#### 1. **Parámetro Flexible (líneas 29-31)**
+
+```php
+$days = $request->input('days', 7);
+$endDate = Carbon::now();
+$startDate = $endDate->copy()->subDays($days);
+```
+
+**Schema permite configuración:**
+
+```php
+'days' => $schema->integer()
+    ->minimum(1)
+    ->maximum(90)
+    ->default(7)
+    ->optional(),
+```
+
+**Casos de uso:**
+
+- `days: 7` → Análisis semanal (default)
+- `days: 30` → Análisis mensual
+- `days: 90` → Análisis trimestral
+
+#### 2. **Tres Pasos de Análisis (líneas 34-42)**
+
+**Paso 1: Recolectar Métricas**
+
+```php
+$metrics = $this->metricsCollector->collectMetrics($startDate, $endDate);
+```
+
+**Ejemplo de métricas recolectadas:**
+
+```php
+[
+    'tasks_completed' => 45,
+    'tasks_in_progress' => 12,
+    'tasks_blocked' => 3,
+    'tasks_in_review' => 8,
+    'total_hours_spent' => 320,
+    'average_completion_time' => 2.5, // days
+    'tasks' => [
+        ['id' => 1, 'status' => 'completed', 'hours' => 8, ...],
+        ['id' => 2, 'status' => 'blocked', 'hours' => 0, ...],
+        // ...
+    ],
+]
+```
+
+**Paso 2: Análisis con IA**
+
+```php
+$analysis = $this->productivityAnalyzer->analyze($metrics);
+```
+
+**¿Qué hace `analyze()` del ProductivityAnalyzer?** (152 líneas)
+
+```php
+public function analyze(array $metrics): string
+{
+    if (!$this->openAIService->isAvailable()) {
+        return $this->generateFallbackAnalysis($metrics);
+    }
+
+    $prompt = $this->promptBuilder->buildProductivityAnalysisPrompt($metrics);
+
+    return $this->openAIService->complete($prompt, [
+        'temperature' => 0.6,
+        'max_tokens' => 1500,
+    ]);
+}
+```
+
+**Prompt ejemplo:**
+
+```
+Analyze the following team productivity metrics and provide insights:
+
+Period: Last 7 days
+Tasks Completed: 45
+Tasks In Progress: 12
+Tasks Blocked: 3
+Tasks In Review: 8
+Total Hours Spent: 320
+Average Completion Time: 2.5 days
+
+Provide:
+1. Overall productivity assessment
+2. Key strengths and weaknesses
+3. Trends and patterns
+4. Specific actionable recommendations
+
+Analysis:
+```
+
+**OpenAI responde con análisis detallado (ejemplo):**
+
+```markdown
+## Overall Productivity Assessment
+
+The team shows strong productivity with 45 completed tasks in 7 days (6.4 tasks/day).
+Average completion time of 2.5 days is within healthy range.
+
+## Key Observations
+
+**Strengths:**
+- High completion rate (78% of active tasks)
+- Consistent daily velocity
+
+**Concerns:**
+- 3 blocked tasks indicating potential dependencies issues
+- Review queue building up with 8 tasks (possible bottleneck)
+
+## Trends
+
+- Tasks are moving through workflow efficiently except for review stage
+- Blocked tasks have been stagnant for average of 4 days
+
+## Recommendations
+
+1. **Review Process**: Add a second reviewer or increase review capacity
+2. **Blocked Tasks**: Daily standup to unblock dependencies
+3. **Documentation**: Review blocked tasks to identify common blockers
+4. **Automation**: Consider automated testing to reduce review time
+```
+
+**Paso 3: Identificar Cuellos de Botella**
+
+```php
+$tasksArray = $metrics['tasks'] ?? [];
+$bottlenecks = $this->productivityAnalyzer->identifyBottlenecks($tasksArray);
+```
+
+**¿Qué hace `identifyBottlenecks()`?**
+
+```php
+public function identifyBottlenecks(array $tasks): array
+{
+    $bottlenecks = [];
+
+    // Count tasks by status
+    $statusCounts = [];
+    foreach ($tasks as $task) {
+        $status = $task['status'] ?? 'unknown';
+        $statusCounts[$status] = ($statusCounts[$status] ?? 0) + 1;
+    }
+
+    // Detect blocked tasks bottleneck
+    if (isset($statusCounts['blocked']) && $statusCounts['blocked'] > 3) {
+        $bottlenecks[] = [
+            'type' => 'blocked_tasks',
+            'count' => $statusCounts['blocked'],
+            'severity' => 'high',
+            'message' => "High number of blocked tasks ({$statusCounts['blocked']})",
+        ];
+    }
+
+    // Detect review backlog
+    if (isset($statusCounts['review']) && $statusCounts['review'] > 5) {
+        $bottlenecks[] = [
+            'type' => 'review_backlog',
+            'count' => $statusCounts['review'],
+            'severity' => 'medium',
+            'message' => "Review backlog building up ({$statusCounts['review']} tasks)",
+        ];
+    }
+
+    return $bottlenecks;
+}
+```
+
+**Ejemplo de bottlenecks detectados:**
+
+```php
+[
+    [
+        'type' => 'review_backlog',
+        'count' => 8,
+        'severity' => 'medium',
+        'message' => 'Review backlog building up (8 tasks)',
+    ],
+]
+```
+
+#### 3. **Respuesta Rica (líneas 44-54)**
+
+```php
+return Response::json([
+    'success' => true,
+    'period' => [
+        'days' => 7,
+        'start' => '2025-11-06',
+        'end' => '2025-11-13',
+    ],
+    'metrics' => $metrics,
+    'ai_analysis' => $analysis,
+    'bottlenecks' => $bottlenecks,
+]);
+```
+
+**3 tipos de información:**
+
+1. **metrics**: Datos cuantitativos (números, conteos)
+2. **ai_analysis**: Análisis cualitativo con IA (texto markdown)
+3. **bottlenecks**: Problemas específicos detectados (estructurados)
+
+### Ejemplo de Uso Real
+
+**Conversación:**
+
+```
+User: Analyze our team's productivity for the last 2 weeks
+
+Claude: I'll analyze your team's productivity over the last 14 days.
+        [Calls analyze_productivity tool with days: 14]
+
+Tool Response:
+{
+  "success": true,
+  "period": {
+    "days": 14,
+    "start": "2025-10-30",
+    "end": "2025-11-13"
+  },
+  "metrics": {
+    "tasks_completed": 87,
+    "tasks_in_progress": 15,
+    "tasks_blocked": 5,
+    "tasks_in_review": 12,
+    "total_hours_spent": 680,
+    "average_completion_time": 3.2
+  },
+  "ai_analysis": "## Overall Productivity Assessment\n\nThe team shows strong productivity with 87 completed tasks in 14 days (6.2 tasks/day)...",
+  "bottlenecks": [
+    {
+      "type": "blocked_tasks",
+      "count": 5,
+      "severity": "high",
+      "message": "High number of blocked tasks (5)"
+    },
+    {
+      "type": "review_backlog",
+      "count": 12,
+      "severity": "medium",
+      "message": "Review backlog building up (12 tasks)"
+    }
+  ]
+}
+
+Claude: Here's the productivity analysis for the last 2 weeks:
+
+📊 **Metrics Summary:**
+- ✅ 87 tasks completed (6.2 tasks/day)
+- 🔄 15 tasks in progress
+- 🚫 5 tasks blocked
+- 👀 12 tasks in review
+- ⏱️ 680 hours total (48.6 hours/day)
+- 📈 Average completion: 3.2 days
+
+⚠️ **Bottlenecks Identified:**
+
+1. **High Priority - Blocked Tasks (5)**
+   - 5 tasks are currently blocked, which is above the healthy threshold
+
+2. **Medium Priority - Review Backlog (12)**
+   - 12 tasks waiting for review, indicating a potential bottleneck
+
+🤖 **AI Analysis:**
+
+[AI-generated markdown analysis here...]
+
+The team shows strong overall productivity, but there are two areas that need attention:
+1. The review process may need additional capacity
+2. Blocked tasks should be addressed daily to prevent prolonged delays
+
+Would you like me to:
+- Show details of the blocked tasks?
+- Suggest ways to improve the review process?
+- Generate a detailed report?
+```
+
+---
+
+## 8.7 Comparación de las 4 Herramientas
+
+| Herramienta | Tipo de IA | Input | Output | Domain Service Usado | Use Case Principal |
+|-------------|-----------|-------|--------|---------------------|-------------------|
+| **GenerateTaskDescription** | Generativa (GPT-4) | task_id | Descripción técnica detallada | TaskDescriptionGenerator | Generar documentación para tareas con títulos básicos |
+| **ImproveTaskTitle** | Generativa (GPT-4) | task_id | Título mejorado | TaskDescriptionGenerator | Mejorar claridad y formato de títulos |
+| **SuggestPriority** | Analítica (Algoritmo) | task_id | Prioridad sugerida + factores | TaskPriorityCalculator | Detectar tareas que necesitan escalación |
+| **AnalyzeProductivity** | Analítica (GPT-4 + Algoritmos) | days (opcional) | Métricas + análisis + bottlenecks | ProductivityAnalyzer, MetricsCollector | Identificar problemas de flujo de trabajo |
+
+### Tipos de IA
+
+**1. IA Generativa (GPT-4)**
+
+- **GenerateTaskDescription**: Genera texto nuevo (descripciones)
+- **ImproveTaskTitle**: Transforma texto existente (títulos)
+
+**2. IA Analítica (Algoritmos + GPT-4)**
+
+- **SuggestPriority**: Algoritmo de scoring + explicación con IA opcional
+- **AnalyzeProductivity**: Algoritmos de detección de bottlenecks + análisis narrativo con GPT-4
+
+---
+
+## 8.8 Integración con Domain Services
+
+Estas herramientas MCP **no contienen lógica de negocio**, sino que **delegan** a Domain Services:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                       Layered Architecture                       │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ Presentation Layer (MCP Tools)                                  │
+│                                                                  │
+│ ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐   │
+│ │ Generate        │  │ Improve         │  │ Suggest        │   │
+│ │ TaskDescription │  │ TaskTitle       │  │ Priority       │   │
+│ └────────┬────────┘  └────────┬────────┘  └────────┬───────┘   │
+│          │                     │                     │            │
+└──────────┼─────────────────────┼─────────────────────┼───────────┘
+           │                     │                     │
+           ▼                     ▼                     ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Domain Layer (Domain Services)                                  │
+│                                                                  │
+│ ┌──────────────────────┐  ┌──────────────────────┐             │
+│ │ TaskDescription      │  │ TaskPriority         │             │
+│ │ Generator            │  │ Calculator           │             │
+│ │                      │  │                      │             │
+│ │ - generate()         │  │ - calculateSuggest...│             │
+│ │ - improveTitle()     │  │ - compare()          │             │
+│ │ - generateCriteria() │  │ - sortByPriority()   │             │
+│ └──────────┬───────────┘  └──────────┬───────────┘             │
+│            │                          │                          │
+│            ▼                          ▼                          │
+│ ┌──────────────────────┐  ┌──────────────────────┐             │
+│ │ OpenAIService        │  │ PromptBuilder        │             │
+│ │                      │  │                      │             │
+│ │ - complete()         │  │ - buildTaskDescri... │             │
+│ │ - generateJson()     │  │ - buildTitleImpro... │             │
+│ │ - isAvailable()      │  │ - buildPrioritySu... │             │
+│ └──────────────────────┘  └──────────────────────┘             │
+└─────────────────────────────────────────────────────────────────┘
+           │                          │
+           ▼                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Infrastructure Layer                                            │
+│                                                                  │
+│ ┌──────────────────────┐  ┌──────────────────────┐             │
+│ │ OpenAI API Client    │  │ Task Repository      │             │
+│ │ (External)           │  │ (Eloquent)           │             │
+│ └──────────────────────┘  └──────────────────────┘             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Ventajas de esta arquitectura:**
+
+1. **Separation of Concerns**: MCP Tools son solo adaptadores
+2. **Reusabilidad**: Los Domain Services pueden usarse desde:
+   - MCP Tools
+   - Controllers HTTP
+   - Artisan Commands
+   - Jobs en cola
+3. **Testabilidad**: Puedes testear Domain Services sin MCP
+4. **Mantenibilidad**: Cambios en OpenAI API solo afectan OpenAIService
+
+---
+
+## 8.9 Resumen del Capítulo
+
+### Conceptos Clave Aprendidos
+
+1. **AIAssistantServer**: MCP Server especializado en herramientas con IA
+2. **4 Herramientas AI**:
+   - **GenerateTaskDescription**: Genera descripciones técnicas detalladas
+   - **ImproveTaskTitle**: Mejora títulos siguiendo best practices
+   - **SuggestPriority**: Calcula prioridad óptima con algoritmo de scoring
+   - **AnalyzeProductivity**: Analiza métricas y detecta bottlenecks
+3. **Domain Services**: Lógica de IA encapsulada y reutilizable
+4. **Fallback Mechanisms**: Funcionalidad degradada cuando OpenAI no está disponible
+5. **Arquitectura en Capas**: MCP Tools → Domain Services → Infrastructure
+
+### Patrón de Diseño: Service-Oriented MCP Tools
+
+```
+MCP Tool (thin adapter)
+    ↓
+    Uses 1-2 Domain Services
+    ↓
+    Domain Services encapsulate business logic
+    ↓
+    Domain Services use Infrastructure (OpenAI, Repositories)
+```
+
+**Ventajas:**
+
+- **Testable**: Mock Domain Services en unit tests
+- **Reusable**: Domain Services usados desde múltiples lugares
+- **Maintainable**: Cambios aislados en Domain Services
+
+### Diferencias con TaskToolsServer (Capítulo 7)
+
+| Aspecto | TaskToolsServer | AIAssistantServer |
+|---------|----------------|-------------------|
+| Propósito | CRUD operations | AI assistance |
+| Complejidad | Simple (direct DB access) | Complex (AI + algorithms) |
+| Latencia | Baja (<100ms) | Alta (1-5s para OpenAI) |
+| Costo | Gratis | Requiere OpenAI API key |
+| Errores | DB errors | DB + OpenAI + rate limiting |
+
+### Flujo Completo de un Tool AI
+
+```
+User → Claude → MCP Tool → Schema Validation → Repository → Domain Service
+   ↓                                                              ↓
+   ↓                                                     OpenAI API / Algorithm
+   ↓                                                              ↓
+   ← Response ← Claude ← MCP Tool ← Response ← Domain Service ←─┘
+```
+
+---
+
+🔜 **Próximo Capítulo:**
+En el Capítulo 9 exploraremos **AnalyticsResourcesServer**, viendo cómo exponer métricas y datos analíticos como Recursos MCP que los LLMs pueden consultar.
+
+---
+
+**Estado del Tutorial:** Capítulos 1-8 de 15 completados ✓
