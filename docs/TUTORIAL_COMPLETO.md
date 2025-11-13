@@ -15539,3 +15539,861 @@ En el siguiente capítulo exploraremos **Conexión y Uso de MCP Servers**, apren
 ---
 
 **Estado del Tutorial:** Capítulos 1-13 de 15 completados ✓
+
+# Capítulo 14: Conexión y Uso de MCP Servers - De Código a Producción
+
+## 14.1 ¿Cómo Funcionan los MCP Servers?
+
+Hasta ahora hemos **construido** los servidores MCP (TaskToolsServer, AIAssistantServer, etc.). Ahora aprenderemos cómo **usarlos** desde clientes como Claude Desktop.
+
+### Analogía: La API REST que Habla tu Idioma
+
+Imagina que construiste una API REST tradicional:
+
+**API REST tradicional:**
+```
+Usuario → Frontend → HTTP Request → API → Database → Response → Frontend → Usuario
+```
+
+**Problemas:**
+1. Usuario necesita hacer clic en botones específicos
+2. Frontend necesita código para cada operación
+3. No hay inteligencia: solo CRUD básico
+
+**MCP Server:**
+```
+Usuario (lenguaje natural) → Claude → MCP Protocol → Servidor → Database → Response → Claude → Usuario (lenguaje natural)
+```
+
+**Ventajas:**
+1. Usuario habla normalmente: "Crea una tarea para refactorizar pagos"
+2. Claude **decide qué herramienta usar** y **qué parámetros enviar**
+3. Claude **interpreta respuesta** y la presenta humanamente
+
+**MCP es como una API REST que:**
+- Claude puede **descubrir automáticamente** (no necesitas documentación manual)
+- Claude puede **llamar dinámicamente** basándose en conversación natural
+- Claude puede **componer** (llamar múltiples tools en secuencia)
+
+## 14.2 Configuración de Claude Desktop
+
+### Paso 1: Ubicar el Archivo de Configuración
+
+**macOS:**
+```bash
+~/Library/Application Support/Claude/claude_desktop_config.json
+```
+
+**Windows:**
+```bash
+%APPDATA%/Claude/claude_desktop_config.json
+```
+
+**Linux:**
+```bash
+~/.config/Claude/claude_desktop_config.json
+```
+
+### Paso 2: Obtener Token de Autenticación
+
+Los servidores MCP están protegidos con **Laravel Sanctum**. Necesitas un token API.
+
+**Método 1: Via Tinker (recomendado para desarrollo)**
+
+```bash
+php artisan tinker
+```
+
+```php
+// Obtener usuario existente
+$user = \App\Infrastructure\Persistence\Eloquent\Models\User::first();
+
+// Si no existe, créalo
+$user = \App\Infrastructure\Persistence\Eloquent\Models\User::create([
+    'name' => 'Claude Desktop',
+    'email' => 'claude@taskmaster.local',
+    'password' => bcrypt('secure-password-here'),
+]);
+
+// Generar token Sanctum
+$token = $user->createToken('claude-desktop')->plainTextToken;
+
+// Mostrar token
+echo $token;
+// Salida: 1|abcdefghijklmnopqrstuvwxyz1234567890
+```
+
+**Método 2: Via API (producción)**
+
+```bash
+curl -X POST http://localhost:8000/api/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "admin@taskmaster.test",
+    "password": "password"
+  }'
+
+# Respuesta:
+# {
+#   "token": "1|abcdefghijklmnopqrstuvwxyz1234567890",
+#   "user": { ... }
+# }
+```
+
+**⚠️ IMPORTANTE**: Guarda este token de forma segura. Lo necesitarás en el siguiente paso.
+
+### Paso 3: Configurar claude_desktop_config.json
+
+Edita el archivo de configuración:
+
+```json
+{
+  "mcpServers": {
+    "taskmaster-tasks": {
+      "url": "http://localhost:8000/mcp/tasks",
+      "transport": "http",
+      "headers": {
+        "Authorization": "Bearer 1|tu-token-sanctum-aqui",
+        "Accept": "application/json"
+      }
+    },
+    "taskmaster-ai": {
+      "url": "http://localhost:8000/mcp/ai",
+      "transport": "http",
+      "headers": {
+        "Authorization": "Bearer 1|tu-token-sanctum-aqui",
+        "Accept": "application/json"
+      }
+    },
+    "taskmaster-analytics": {
+      "url": "http://localhost:8000/mcp/analytics",
+      "transport": "http",
+      "headers": {
+        "Authorization": "Bearer 1|tu-token-sanctum-aqui",
+        "Accept": "application/json"
+      }
+    },
+    "taskmaster-reports": {
+      "url": "http://localhost:8000/mcp/reports",
+      "transport": "http",
+      "headers": {
+        "Authorization": "Bearer 1|tu-token-sanctum-aqui",
+        "Accept": "application/json"
+      }
+    }
+  }
+}
+```
+
+### Análisis de la Configuración
+
+**Cada servidor tiene:**
+
+1. **`url`**: Endpoint HTTP del servidor MCP
+   - Coincide con lo definido en `routes/ai.php`:
+   ```php
+   Mcp::web('/mcp/tasks', TaskToolsServer::class);
+   ```
+
+2. **`transport`**: Tipo de transporte
+   - `"http"`: Servidor web (producción, desarrollo remoto)
+   - `"stdio"`: Servidor local via CLI (desarrollo local)
+
+3. **`headers`**: Headers HTTP para cada request
+   - `Authorization`: Token Sanctum para autenticación
+   - `Accept`: Indica que esperamos JSON
+
+**¿Por qué múltiples servidores?**
+- **Modularidad**: Cada servidor tiene un propósito específico
+- **Permisos**: Puedes dar acceso solo a ciertos servidores
+- **Performance**: Claude solo carga los tools del servidor relevante
+
+### Paso 4: Reiniciar Claude Desktop
+
+**Importante**: Claude Desktop **solo lee** el config al iniciar.
+
+```bash
+# macOS
+killall Claude
+open -a Claude
+
+# Windows
+# Cerrar Claude desde Task Manager
+# Abrir Claude nuevamente
+
+# Linux
+pkill claude
+claude &
+```
+
+### Paso 5: Verificar Conexión
+
+**En Claude Desktop, escribe:**
+
+```
+Usuario: ¿Qué herramientas MCP tienes disponibles?
+```
+
+**Claude debería responder algo como:**
+
+```
+Claude: Tengo acceso a los siguientes servidores MCP:
+
+**TaskMaster - Tasks:**
+- create_task: Crear nueva tarea
+- list_tasks: Listar tareas
+- get_task: Obtener detalles de una tarea
+- update_task: Actualizar tarea existente
+- delete_task: Eliminar tarea
+- assign_task: Asignar tarea a un usuario
+
+**TaskMaster - AI Assistant:**
+- generate_task_description: Generar descripción técnica con IA
+- improve_task_title: Mejorar título de tarea
+- suggest_priority: Sugerir prioridad basada en análisis
+- analyze_productivity: Analizar productividad del equipo
+
+**TaskMaster - Analytics (Resources):**
+- team-metrics: Métricas del equipo
+- project-metrics: Métricas por proyecto
+- user-productivity: Productividad individual
+- velocity-trends: Tendencias de velocidad
+- overdue-report: Reporte de tareas atrasadas
+
+**TaskMaster - Reports:**
+- generate-sprint-report: Generar reporte de sprint
+- generate-project-status-report: Estado de proyecto
+- export-tasks: Exportar tareas filtradas
+
+¿En qué puedo ayudarte?
+```
+
+✅ **Si ves esto, la configuración es correcta.**
+
+❌ **Si no ves los servidores:**
+- Verifica que Laravel esté corriendo: `php artisan serve`
+- Verifica el token en el config file
+- Revisa logs de Laravel: `tail -f storage/logs/laravel.log`
+- Reinicia Claude Desktop completamente
+
+## 14.3 Usando los MCP Servers: Ejemplos Reales
+
+### Ejemplo 1: Crear Tarea Simple
+
+**Conversación:**
+
+```
+Usuario: Crea una tarea llamada "Implementar login con Google" 
+         en el proyecto 1 con prioridad alta
+
+Claude: [Internamente ejecuta]
+{
+  "server": "taskmaster-tasks",
+  "tool": "create_task",
+  "arguments": {
+    "title": "Implementar login con Google",
+    "project_id": 1,
+    "priority": "high",
+    "description": "Añadir autenticación OAuth2 con Google"
+  }
+}
+
+Claude: "He creado la tarea #42 'Implementar login con Google' con 
+prioridad alta en el proyecto. La tarea está en estado 'pending' 
+y lista para ser asignada."
+```
+
+**¿Qué pasó internamente?**
+
+1. Claude **entendió** tu solicitud en lenguaje natural
+2. Claude **eligió** el tool correcto (`create_task`)
+3. Claude **extrajo** los parámetros: title, project_id, priority
+4. Claude **llamó** al servidor MCP vía HTTP POST
+5. Laravel procesó la request, validó con JSON Schema, creó la tarea
+6. Laravel respondió con la tarea creada
+7. Claude **interpretó** la respuesta y te respondió humanamente
+
+**Request HTTP real (generado por Claude):**
+
+```http
+POST http://localhost:8000/mcp/tasks HTTP/1.1
+Authorization: Bearer 1|abcdefgh...
+Content-Type: application/json
+
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "create_task",
+    "arguments": {
+      "title": "Implementar login con Google",
+      "project_id": 1,
+      "priority": "high",
+      "description": "Añadir autenticación OAuth2 con Google"
+    }
+  }
+}
+```
+
+**Response HTTP (de Laravel):**
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "success": true,
+    "task": {
+      "id": 42,
+      "title": "Implementar login con Google",
+      "project_id": 1,
+      "priority": "high",
+      "status": "pending",
+      "created_at": "2025-03-16T10:30:00Z"
+    }
+  }
+}
+```
+
+### Ejemplo 2: Workflow Completo con Múltiples Tools
+
+**Conversación:**
+
+```
+Usuario: Necesito crear una tarea para refactorizar el módulo de pagos,
+         asignársela a María (user_id: 3), añadir las etiquetas 
+         'refactoring' y 'payments', y generar una descripción técnica 
+         detallada con IA
+
+Claude: [Ejecuta 3 tools en secuencia]
+
+1. create_task({
+     title: "Refactorizar módulo de pagos",
+     project_id: 1,
+     priority: "medium",
+     assigned_to: 3
+   })
+   → Tarea #43 creada
+
+2. attach_tags({
+     task_id: 43,
+     tags: ["refactoring", "payments"]
+   })
+   → Tags añadidos
+
+3. generate_task_description({
+     task_id: 43,
+     technical_level: "senior",
+     include_acceptance_criteria: true
+   })
+   → Descripción generada con OpenAI
+
+Claude: "He completado tu solicitud:
+
+✅ Tarea #43 creada: 'Refactorizar módulo de pagos'
+✅ Asignada a María
+✅ Etiquetas añadidas: refactoring, payments
+✅ Descripción técnica generada:
+
+**Objetivo**
+Refactorizar el módulo de pagos para mejorar mantenibilidad, 
+escalabilidad y separación de responsabilidades.
+
+**Alcance Técnico:**
+- Separar lógica de procesamiento de pagos en servicios independientes
+- Implementar Strategy Pattern para diferentes gateways
+- Añadir tests unitarios y de integración
+- Documentar API interna
+
+**Criterios de Aceptación:**
+✓ Código cumple PSR-12
+✓ Cobertura de tests > 80%
+✓ Sin duplicación de lógica
+✓ Documentación actualizada
+
+**Estimación:** 16 horas
+
+La tarea está lista para que María comience a trabajar."
+```
+
+**¿Qué aprendemos?**
+- Claude puede **componer** múltiples tools
+- Claude decide el **orden de ejecución**
+- Claude **maneja errores** si algún tool falla
+- Claude **interpreta resultados** y te da un resumen
+
+### Ejemplo 3: Usando Resources (Analytics)
+
+**Conversación:**
+
+```
+Usuario: ¿Cuál es nuestra productividad este mes?
+
+Claude: [Lee el resource analytics://team-metrics]
+
+GET http://localhost:8000/mcp/analytics
+X-MCP-Resource: team-metrics
+X-MCP-Params: {"period": "last_30_days"}
+
+Claude: "En los últimos 30 días, el equipo ha mostrado un buen rendimiento:
+
+✅ **Tareas Completadas:** 47
+📝 **Tareas Creadas:** 52
+⏱️ **Tiempo Promedio:** 18.5 horas por tarea
+📈 **Velocidad:** 1.2 tasks/day (por encima del objetivo)
+🔥 **Burn Rate:** 0.9 (saludable)
+
+El equipo está manteniendo un ritmo sostenible y completando tareas
+ligeramente más rápido que el objetivo."
+```
+
+**Diferencia Tools vs Resources:**
+
+| **Aspecto** | **Tools** | **Resources** |
+|-------------|-----------|---------------|
+| **Operación** | Escribir (CREATE, UPDATE, DELETE) | Solo leer (READ) |
+| **Request** | POST con `tools/call` | GET con `resources/read` |
+| **Cuando usar** | "Crea una tarea", "Asigna usuario" | "Muéstrame métricas", "¿Cuál es el estado?" |
+| **Ejemplo** | `create_task`, `update_task` | `team-metrics`, `project-health` |
+
+### Ejemplo 4: Generando Reporte con Múltiples Formatos
+
+**Conversación:**
+
+```
+Usuario: Genera un reporte del sprint del 1 al 15 de marzo en formato markdown
+
+Claude: [Llama a generate-sprint-report del ReportsServer]
+
+{
+  "tool": "generate-sprint-report",
+  "arguments": {
+    "start_date": "2025-03-01",
+    "end_date": "2025-03-15",
+    "format": "markdown"
+  }
+}
+
+Claude: "Aquí está el reporte del sprint:
+
+# Sprint Report
+
+**Generated:** 2025-03-16 10:30:00
+
+## Sprint Period
+- Start: 2025-03-01
+- End: 2025-03-15
+- Duration: 14 days
+
+## Summary
+- Total Tasks: 52
+- Completed: 45
+- Completion Rate: 86.5%
+- Velocity: 3.2 tasks/day
+
+## Status Breakdown
+- Completed: 45
+- In_progress: 5
+- Review: 2
+- Pending: 0
+- Blocked: 0
+
+## Team Performance
+
+### Alice Johnson
+- Total Tasks: 12
+- Completed: 10
+- Completion Rate: 83.3%
+
+### Bob Smith
+- Total Tasks: 8
+- Completed: 8
+- Completion Rate: 100%
+
+¿Quieres que exporte esto a un archivo o necesitas algún análisis adicional?"
+```
+
+## 14.4 Testing Local con cURL
+
+Antes de usar Claude Desktop, es útil testear los servidores MCP directamente con cURL.
+
+### Test 1: Verificar Autenticación
+
+```bash
+# 1. Obtener token
+TOKEN=$(curl -s -X POST http://localhost:8000/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@taskmaster.test","password":"password"}' \
+  | jq -r '.token')
+
+echo "Token: $TOKEN"
+
+# 2. Verificar que el servidor responde
+curl -X POST http://localhost:8000/mcp/tasks \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/list"
+  }' | jq
+
+# Debería listar todos los tools disponibles
+```
+
+### Test 2: Crear Tarea via cURL
+
+```bash
+curl -X POST http://localhost:8000/mcp/tasks \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+      "name": "create_task",
+      "arguments": {
+        "title": "Test task from cURL",
+        "project_id": 1,
+        "priority": "medium",
+        "description": "Testing MCP server with cURL"
+      }
+    }
+  }' | jq
+
+# Respuesta esperada:
+# {
+#   "jsonrpc": "2.0",
+#   "id": 2,
+#   "result": {
+#     "success": true,
+#     "task": {
+#       "id": 50,
+#       "title": "Test task from cURL",
+#       ...
+#     }
+#   }
+# }
+```
+
+### Test 3: Leer Resource (Analytics)
+
+```bash
+curl -X GET "http://localhost:8000/mcp/analytics?resource=team-metrics&period=last_30_days" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/json" | jq
+
+# Respuesta:
+# {
+#   "data": {
+#     "tasks_completed": 47,
+#     "tasks_created": 52,
+#     "velocity": 1.2,
+#     ...
+#   }
+# }
+```
+
+### Test 4: Manejo de Errores
+
+```bash
+# Intentar crear tarea SIN project_id (debería fallar)
+curl -X POST http://localhost:8000/mcp/tasks \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "create_task",
+      "arguments": {
+        "title": "Task sin proyecto"
+      }
+    }
+  }' | jq
+
+# Respuesta esperada (error):
+# {
+#   "jsonrpc": "2.0",
+#   "id": 3,
+#   "error": {
+#     "code": -32602,
+#     "message": "Invalid params",
+#     "data": {
+#       "validation_errors": {
+#         "project_id": ["The project_id field is required."]
+#       }
+#     }
+#   }
+# }
+```
+
+## 14.5 Best Practices para Uso en Producción
+
+### 1. Seguridad
+
+**❌ NO hagas esto:**
+```json
+{
+  "mcpServers": {
+    "taskmaster": {
+      "url": "https://api.taskmaster.com/mcp/tasks",
+      "headers": {
+        "Authorization": "Bearer 1|abcdefgh..."  // Token hardcodeado
+      }
+    }
+  }
+}
+```
+
+**✅ Hazlo así:**
+
+```json
+{
+  "mcpServers": {
+    "taskmaster": {
+      "url": "https://api.taskmaster.com/mcp/tasks",
+      "headers": {
+        "Authorization": "Bearer ${TASKMASTER_TOKEN}"  // Variable de entorno
+      }
+    }
+  }
+}
+```
+
+**Configurar variable de entorno:**
+
+```bash
+# macOS/Linux
+export TASKMASTER_TOKEN="1|abcdefgh..."
+
+# Windows
+set TASKMASTER_TOKEN=1|abcdefgh...
+
+# O añadir a ~/.bashrc o ~/.zshrc
+echo 'export TASKMASTER_TOKEN="1|abcdefgh..."' >> ~/.bashrc
+```
+
+### 2. Rate Limiting
+
+En producción, añade rate limiting a tus servidores MCP:
+
+```php
+// app/Http/Middleware/ThrottleMcpRequests.php
+use Illuminate\Routing\Middleware\ThrottleRequests;
+
+Route::middleware(['throttle:mcp'])->group(function () {
+    Mcp::web('/mcp/tasks', TaskToolsServer::class);
+});
+
+// config/route.php
+'mcp' => [
+    'max_attempts' => 60,  // 60 requests
+    'decay_minutes' => 1,  // por minuto
+],
+```
+
+### 3. Logging y Monitoreo
+
+Loguea todas las llamadas MCP para debugging y auditoría:
+
+```php
+// En cada Tool, añade logging
+public function handle(Request $request): Response
+{
+    Log::info('MCP Tool called', [
+        'tool' => 'create_task',
+        'user' => auth()->id(),
+        'params' => $request->all(),
+        'timestamp' => now(),
+    ]);
+
+    // ... lógica del tool
+
+    Log::info('MCP Tool completed', [
+        'tool' => 'create_task',
+        'task_id' => $task->id,
+        'duration_ms' => $duration,
+    ]);
+}
+```
+
+### 4. Versionado de APIs
+
+Considera versionar tus servidores MCP:
+
+```php
+// routes/ai.php
+Mcp::web('/mcp/v1/tasks', TaskToolsServer::class);
+Mcp::web('/mcp/v2/tasks', TaskToolsServerV2::class);
+```
+
+Esto permite:
+- Cambiar la API sin romper clientes existentes
+- A/B testing de nuevas features
+- Deprecación gradual de versiones antiguas
+
+## 14.6 Troubleshooting Común
+
+### Problema 1: "Server not found"
+
+**Síntoma:** Claude dice "No tengo acceso a ese servidor MCP"
+
+**Causas posibles:**
+1. Laravel no está corriendo
+2. URL incorrecta en config
+3. Claude Desktop no reiniciado
+
+**Solución:**
+```bash
+# 1. Verificar que Laravel esté corriendo
+curl http://localhost:8000/mcp/tasks
+# Debería responder, aunque sea con error de auth
+
+# 2. Verificar config
+cat ~/Library/Application\ Support/Claude/claude_desktop_config.json | jq
+
+# 3. Reiniciar Claude
+killall Claude
+open -a Claude
+```
+
+### Problema 2: "Unauthorized"
+
+**Síntoma:** Errores 401 o "Invalid token"
+
+**Causas posibles:**
+1. Token expirado
+2. Token inválido
+3. Middleware Sanctum no configurado
+
+**Solución:**
+```bash
+# Regenerar token
+php artisan tinker
+>>> $user = User::first();
+>>> $user->tokens()->delete();  // Eliminar tokens viejos
+>>> $token = $user->createToken('claude')->plainTextToken;
+>>> echo $token;
+
+# Actualizar en claude_desktop_config.json
+```
+
+### Problema 3: "Tool execution failed"
+
+**Síntoma:** El tool se ejecuta pero falla internamente
+
+**Solución:**
+```bash
+# Ver logs de Laravel
+tail -f storage/logs/laravel.log
+
+# Test manual con cURL
+curl -X POST http://localhost:8000/mcp/tasks ...
+
+# Verificar con Tinker
+php artisan tinker
+>>> app(CreateTask::class)->handle($request);
+```
+
+### Problema 4: Performance lento
+
+**Síntoma:** Responses MCP tardan mucho
+
+**Causas posibles:**
+1. N+1 queries (falta eager loading)
+2. OpenAI API lenta
+3. Sin caché
+
+**Solución:**
+```php
+// 1. Eager loading en repositories
+return Task::with(['project', 'assignedTo', 'tags'])->find($id);
+
+// 2. Cache para resources
+public function handle(Request $request): Response
+{
+    return Cache::remember('team-metrics', 300, function() {
+        return $this->metricsCollector->collect();
+    });
+}
+
+// 3. Queue para operaciones lentas
+public function handle(Request $request): Response
+{
+    GenerateAIDescription::dispatch($taskId);
+    return Response::json(['queued' => true]);
+}
+```
+
+## 14.7 Resumen del Capítulo
+
+**Conceptos Clave Aprendidos:**
+
+1. **Configuración de Claude Desktop**: archivo `claude_desktop_config.json`
+2. **Autenticación con Sanctum**: tokens API para proteger servidores
+3. **Diferencia Tools vs Resources**: write operations vs read-only
+4. **MCP Protocol**: JSON-RPC 2.0 sobre HTTP
+5. **Testing con cURL**: verificar servidores antes de usarlos con Claude
+6. **Best Practices**: seguridad, rate limiting, logging, versionado
+
+**Flujo Completo:**
+
+```
+1. Desarrollador crea MCP Server en Laravel (TaskToolsServer)
+2. Desarrollador registra en routes/ai.php
+3. Desarrollador genera token Sanctum
+4. Desarrollador configura claude_desktop_config.json
+5. Usuario habla con Claude en lenguaje natural
+6. Claude decide qué tool usar y con qué parámetros
+7. Claude llama al MCP Server vía HTTP
+8. Laravel procesa, valida, ejecuta
+9. Laravel responde con resultado
+10. Claude interpreta y responde al usuario
+```
+
+**Archivos del Capítulo:**
+
+```
+Configuración:
+~/Library/Application Support/Claude/claude_desktop_config.json
+
+Laravel:
+routes/ai.php                         → Registro de servidores
+app/Http/Middleware/Authenticate.php  → Auth middleware
+config/sanctum.php                    → Sanctum config
+```
+
+**Comandos Importantes:**
+
+```bash
+# Generar token
+php artisan tinker
+>>> $user->createToken('claude')->plainTextToken
+
+# Listar servidores MCP
+php artisan mcp:list
+
+# Test servidor
+curl -X POST http://localhost:8000/mcp/tasks ...
+
+# Ver logs
+tail -f storage/logs/laravel.log
+
+# Reiniciar Claude Desktop
+killall Claude && open -a Claude
+```
+
+**Próximos Pasos:**
+
+En el siguiente y último capítulo, aprenderemos cómo **extender el proyecto** con tus propios servidores MCP personalizados y concluiremos el tutorial con best practices y recursos adicionales.
+
+---
+
+**Estado del Tutorial:** Capítulos 1-14 de 15 completados ✓
