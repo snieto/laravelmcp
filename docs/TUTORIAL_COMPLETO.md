@@ -10782,3 +10782,1094 @@ $param = $request->input('param');  // Extract from URI
 ---
 
 **Estado del Tutorial:** Capítulos 1-9 de 15 completados ✓
+
+---
+
+# Capítulo 10: Eloquent Models y Relationships
+
+## 10.1 Introducción a Eloquent ORM
+
+**Eloquent** es el ORM (Object-Relational Mapper) de Laravel que permite interactuar con la base de datos usando objetos PHP en lugar de escribir SQL directamente.
+
+### Analogía: Bibliotecario Automático
+
+Imagina una biblioteca donde:
+- **Sin ORM**: Tienes que ir físicamente, buscar en el catálogo, anotar referencias, buscar en estantes → SQL directo
+- **Con Eloquent**: Le dices al bibliotecario "Dame todos los libros de ciencia ficción" y él te los trae → Eloquent hace el trabajo
+
+**Eloquent hace el SQL por ti:**
+
+```php
+// SQL directo (sin ORM)
+$tasks = DB::select("SELECT * FROM tasks WHERE status = 'pending' AND priority = 'high'");
+
+// Eloquent (con ORM)
+$tasks = Task::where('status', Status::PENDING)
+    ->where('priority', Priority::HIGH)
+    ->get();
+```
+
+---
+
+## 10.2 Los 5 Modelos del Sistema
+
+Nuestro sistema TaskMaster tiene **5 modelos principales**:
+
+| Modelo | Tabla | Propósito | Archivo |
+|--------|-------|-----------|---------|
+| **Task** | tasks | Tareas del proyecto | `app/Infrastructure/Persistence/Eloquent/Models/Task.php` |
+| **Project** | projects | Proyectos que agrupan tareas | `app/Infrastructure/Persistence/Eloquent/Models/Project.php` |
+| **Comment** | comments | Comentarios en tareas | `app/Infrastructure/Persistence/Eloquent/Models/Comment.php` |
+| **Tag** | tags | Etiquetas para categorizar tareas | `app/Infrastructure/Persistence/Eloquent/Models/Tag.php` |
+| **User** | users | Usuarios del sistema | `app/Models/User.php` |
+
+---
+
+## 10.3 Entity-Relationship Diagram (ERD)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    TaskMaster Database Schema                    │
+└─────────────────────────────────────────────────────────────────┘
+
+┌──────────────┐                    ┌──────────────┐
+│    users     │                    │   projects   │
+├──────────────┤                    ├──────────────┤
+│ id           │◄───────┐           │ id           │
+│ name         │        │           │ owner_id     │───┐
+│ email        │        │           │ name         │   │
+│ ...          │        │           │ description  │   │
+└──────────────┘        │           │ status       │   │
+       ▲                │           │ starts_at    │   │
+       │                │           │ ends_at      │   │
+       │                │           └──────────────┘   │
+       │                │                  ▲           │
+       │                │                  │           │
+       │                └──────────────────┼───────────┘
+       │                                   │
+       │                                   │ 1:N (project hasMany tasks)
+       │                                   │
+       │                           ┌──────────────┐
+       │                           │    tasks     │
+       │                           ├──────────────┤
+       │                           │ id           │
+       │                           │ project_id   │─────────┘
+       │             ┌─────────────┤ assigned_to  │
+       │             │             │ created_by   │───┐
+       │             │             │ title        │   │
+       │             │             │ description  │   │
+       │             │             │ status       │   │
+       │             │             │ priority     │   │
+       │             │             │ due_date     │   │
+       │             │             │ ...          │   │
+       │             │             └──────────────┘   │
+       │             │                    ▲           │
+       │             │                    │           │
+       │             └────────────────────┘           │
+       │                                              │
+       │                                              └─────────┐
+       │                                                        │
+       │                                              ┌──────────────┐
+       │                                              │   comments   │
+       │                                              ├──────────────┤
+       │                                              │ id           │
+       │                                              │ task_id      │─────┘
+       │                                              │ user_id      │───┐
+       │                                              │ content      │   │
+       │                                              └──────────────┘   │
+       │                                                                 │
+       └─────────────────────────────────────────────────────────────────┘
+
+┌──────────────┐         ┌──────────────┐         ┌──────────────┐
+│     tags     │         │  task_tag    │         │    tasks     │
+├──────────────┤         ├──────────────┤         │  (shown      │
+│ id           │◄────────┤ tag_id       │         │   above)     │
+│ name         │         │ task_id      │────────►│              │
+│ slug         │         │ created_at   │         └──────────────┘
+│ color        │         │ updated_at   │
+│ description  │         └──────────────┘
+└──────────────┘         (Pivot Table)
+                         Many-to-Many
+```
+
+### Tipos de Relaciones
+
+**1. BelongsTo (N:1)** - Muchos pertenecen a uno
+- Task → Project (muchas tareas pertenecen a un proyecto)
+- Task → User (assignedTo, createdBy)
+- Comment → Task
+- Comment → User
+- Project → User (owner)
+
+**2. HasMany (1:N)** - Uno tiene muchos
+- Project → Tasks (un proyecto tiene muchas tareas)
+- Task → Comments (una tarea tiene muchos comentarios)
+- User → Projects (como owner)
+- User → Tasks (como assignedTo o createdBy)
+
+**3. BelongsToMany (N:M)** - Muchos a muchos
+- Task ↔ Tag (una tarea puede tener múltiples tags, un tag puede estar en múltiples tareas)
+
+---
+
+## 10.4 Modelo Task (Núcleo del Sistema)
+
+### Código Completo (168 líneas)
+
+```php
+<?php
+
+namespace App\Infrastructure\Persistence\Eloquent\Models;
+
+use App\Domain\TaskManagement\ValueObjects\Priority;
+use App\Domain\TaskManagement\ValueObjects\Status;
+use App\Models\User;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+class Task extends Model
+{
+    use SoftDeletes;
+
+    protected $fillable = [
+        'project_id',
+        'assigned_to',
+        'created_by',
+        'title',
+        'description',
+        'status',
+        'priority',
+        'due_date',
+        'estimated_hours',
+        'actual_hours',
+    ];
+
+    protected $casts = [
+        'status' => Status::class,
+        'priority' => Priority::class,
+        'due_date' => 'datetime',
+        'estimated_hours' => 'integer',
+        'actual_hours' => 'integer',
+    ];
+
+    // Relationships
+    public function project(): BelongsTo
+    {
+        return $this->belongsTo(Project::class);
+    }
+
+    public function assignedTo(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'assigned_to');
+    }
+
+    public function createdBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function tags(): BelongsToMany
+    {
+        return $this->belongsToMany(Tag::class)->withTimestamps();
+    }
+
+    public function comments(): HasMany
+    {
+        return $this->hasMany(Comment::class);
+    }
+
+    // Query Scopes
+    public function scopePending($query)
+    {
+        return $query->where('status', Status::PENDING);
+    }
+
+    public function scopeInProgress($query)
+    {
+        return $query->where('status', Status::IN_PROGRESS);
+    }
+
+    public function scopeCompleted($query)
+    {
+        return $query->where('status', Status::COMPLETED);
+    }
+
+    public function scopeByPriority($query, Priority $priority)
+    {
+        return $query->where('priority', $priority);
+    }
+
+    public function scopeHighPriority($query)
+    {
+        return $query->whereIn('priority', [Priority::HIGH, Priority::CRITICAL]);
+    }
+
+    public function scopeOverdue($query)
+    {
+        return $query->where('due_date', '<', now())
+            ->whereNotIn('status', [Status::COMPLETED]);
+    }
+
+    // Helper Methods
+    public function isCompleted(): bool
+    {
+        return $this->status === Status::COMPLETED;
+    }
+
+    public function isOverdue(): bool
+    {
+        return $this->due_date && $this->due_date->isPast() && !$this->isCompleted();
+    }
+
+    public function isBlocked(): bool
+    {
+        return $this->status === Status::BLOCKED;
+    }
+}
+```
+
+### Anatomía del Modelo Task
+
+#### 1. **Fillable (Mass Assignment Protection)**
+
+```php
+protected $fillable = [
+    'project_id',
+    'assigned_to',
+    'created_by',
+    'title',
+    'description',
+    'status',
+    'priority',
+    'due_date',
+    'estimated_hours',
+    'actual_hours',
+];
+```
+
+**¿Qué es Mass Assignment?**
+
+```php
+// Mass assignment - crear modelo con array de datos
+Task::create([
+    'title' => 'New Task',
+    'status' => 'pending',
+    'priority' => 'high',
+]);
+```
+
+**Sin `$fillable`, esto sería peligroso:**
+
+```php
+// Usuario malicioso podría enviar:
+Task::create($request->all());  // Incluye 'is_admin' => true (hack!)
+```
+
+**Con `$fillable`, solo permite campos específicos:**
+
+```php
+// Solo title, status, priority son permitidos
+// Cualquier otro campo (como 'is_admin') es ignorado
+Task::create($request->all());  // Seguro ✅
+```
+
+#### 2. **Casts (Conversión Automática de Tipos)**
+
+```php
+protected $casts = [
+    'status' => Status::class,        // String → Status enum
+    'priority' => Priority::class,    // String → Priority enum
+    'due_date' => 'datetime',         // String → Carbon instance
+    'estimated_hours' => 'integer',   // String → int
+    'actual_hours' => 'integer',      // String → int
+];
+```
+
+**Ejemplo de uso:**
+
+```php
+// Base de datos guarda: 'status' => 'pending' (string)
+$task = Task::find(1);
+
+// Eloquent convierte automáticamente a Status enum
+echo $task->status->value;  // "pending"
+$task->status->canTransitionTo(Status::IN_PROGRESS);  // true
+
+// Base de datos guarda: 'due_date' => '2025-11-20 14:00:00' (string)
+// Eloquent convierte automáticamente a Carbon
+$task->due_date->isPast();  // false
+$task->due_date->diffForHumans();  // "in 7 days"
+```
+
+**¿Por qué es importante?**
+
+- Sin casts: `$task->status` sería string `"pending"`, tendrías que hacer `Status::from($task->status)` manualmente
+- Con casts: Eloquent hace la conversión automáticamente ✅
+
+#### 3. **SoftDeletes (Eliminación Suave)**
+
+```php
+use SoftDeletes;
+```
+
+**¿Qué hace?**
+
+Cuando "eliminas" un registro, **no se borra realmente** de la base de datos. Solo se marca con `deleted_at` timestamp.
+
+```php
+// "Eliminar" una tarea
+$task->delete();
+
+// En DB:
+// deleted_at: 2025-11-13 15:30:00  (marcado como eliminado)
+
+// Las queries normales NO lo encuentran
+Task::all();  // No incluye tareas eliminadas
+
+// Pero puedes recuperarlo
+$task->restore();  // deleted_at: null
+
+// O incluir eliminados en query
+Task::withTrashed()->get();  // Incluye eliminados
+Task::onlyTrashed()->get();  // Solo eliminados
+
+// O eliminarlo permanentemente
+$task->forceDelete();  // Realmente elimina de DB
+```
+
+**¿Por qué usar Soft Deletes?**
+
+- **Auditoría**: Puedes ver qué se eliminó y cuándo
+- **Recuperación**: Usuarios pueden deshacer eliminaciones
+- **Integridad referencial**: Evitas problemas con foreign keys
+
+---
+
+## 10.5 Relationships en Profundidad
+
+### 1. BelongsTo (N:1) - "Pertenece a"
+
+**Concepto**: Muchos registros pertenecen a uno.
+
+#### Ejemplo: Task → Project
+
+```php
+// En Task model
+public function project(): BelongsTo
+{
+    return $this->belongsTo(Project::class);
+}
+```
+
+**Uso:**
+
+```php
+$task = Task::find(1);
+$project = $task->project;  // Obtiene el proyecto al que pertenece
+
+echo $project->name;  // "E-Commerce Redesign"
+```
+
+**SQL generado:**
+
+```sql
+SELECT * FROM projects WHERE id = ? (task->project_id)
+```
+
+#### Ejemplo con Foreign Key Personalizada: Task → User (assignedTo)
+
+```php
+// En Task model
+public function assignedTo(): BelongsTo
+{
+    return $this->belongsTo(User::class, 'assigned_to');
+    //                                     ↑
+    //                         Foreign key column name
+}
+```
+
+**¿Por qué 'assigned_to'?**
+
+Por defecto, Eloquent busca `user_id`. Pero nuestra columna se llama `assigned_to`, así que le indicamos explícitamente.
+
+**Uso:**
+
+```php
+$task = Task::find(1);
+$assignee = $task->assignedTo;  // Usuario asignado
+
+echo $assignee->name;  // "Alice Chen"
+echo $assignee->email;  // "alice@example.com"
+```
+
+#### Múltiples BelongsTo al Mismo Modelo
+
+```php
+// Task tiene 2 relaciones con User
+public function assignedTo(): BelongsTo
+{
+    return $this->belongsTo(User::class, 'assigned_to');
+}
+
+public function createdBy(): BelongsTo
+{
+    return $this->belongsTo(User::class, 'created_by');
+}
+```
+
+**Uso:**
+
+```php
+$task = Task::find(1);
+
+$assignee = $task->assignedTo;  // Usuario asignado
+$creator = $task->createdBy;    // Usuario que creó la tarea
+
+echo "Task created by {$creator->name}";
+echo "Assigned to {$assignee->name}";
+```
+
+### 2. HasMany (1:N) - "Tiene muchos"
+
+**Concepto**: Un registro tiene muchos relacionados.
+
+#### Ejemplo: Project → Tasks
+
+```php
+// En Project model
+public function tasks(): HasMany
+{
+    return $this->hasMany(Task::class);
+}
+```
+
+**Uso:**
+
+```php
+$project = Project::find(5);
+$tasks = $project->tasks;  // Collection de todas las tareas del proyecto
+
+echo $tasks->count();  // 45
+foreach ($tasks as $task) {
+    echo $task->title;
+}
+
+// Filtrar tareas del proyecto
+$completedTasks = $project->tasks()->completed()->get();
+$highPriorityTasks = $project->tasks()->highPriority()->get();
+```
+
+**SQL generado:**
+
+```sql
+SELECT * FROM tasks WHERE project_id = ? (project->id)
+```
+
+#### Ejemplo: Task → Comments
+
+```php
+// En Task model
+public function comments(): HasMany
+{
+    return $this->hasMany(Comment::class);
+}
+```
+
+**Uso:**
+
+```php
+$task = Task::find(1);
+$comments = $task->comments;  // Todos los comentarios de la tarea
+
+echo $comments->count();  // 7
+
+// Obtener comentarios recientes
+$recentComments = $task->comments()->recent(5)->get();
+
+// Crear nuevo comentario
+$task->comments()->create([
+    'user_id' => auth()->id(),
+    'content' => 'This looks good!',
+]);
+```
+
+### 3. BelongsToMany (N:M) - "Pertenece a muchos"
+
+**Concepto**: Relación muchos-a-muchos. Requiere tabla pivote.
+
+#### Ejemplo: Task ↔ Tag
+
+```php
+// En Task model
+public function tags(): BelongsToMany
+{
+    return $this->belongsToMany(Tag::class)
+        ->withTimestamps();  // Guarda created_at, updated_at en pivot
+}
+
+// En Tag model
+public function tasks(): BelongsToMany
+{
+    return $this->belongsToMany(Task::class)
+        ->withTimestamps();
+}
+```
+
+**Tabla Pivot (task_tag):**
+
+```
+┌──────────┬─────────┬────────────────────┬────────────────────┐
+│ task_id  │ tag_id  │ created_at         │ updated_at         │
+├──────────┼─────────┼────────────────────┼────────────────────┤
+│ 1        │ 3       │ 2025-11-10 10:00   │ 2025-11-10 10:00   │
+│ 1        │ 7       │ 2025-11-10 10:00   │ 2025-11-10 10:00   │
+│ 2        │ 3       │ 2025-11-11 14:30   │ 2025-11-11 14:30   │
+│ 2        │ 5       │ 2025-11-11 14:30   │ 2025-11-11 14:30   │
+└──────────┴─────────┴────────────────────┴────────────────────┘
+```
+
+**Uso:**
+
+```php
+$task = Task::find(1);
+$tags = $task->tags;  // Collection de tags
+
+foreach ($tags as $tag) {
+    echo $tag->name;  // "bug", "urgent", "frontend"
+}
+
+// Agregar tags a una tarea
+$task->tags()->attach([3, 7]);  // Attach tag IDs 3 y 7
+$task->tags()->attach(3);       // Attach single tag
+
+// Remover tags
+$task->tags()->detach([3]);     // Remove tag 3
+$task->tags()->detach();        // Remove todos los tags
+
+// Sincronizar (reemplaza todos los tags)
+$task->tags()->sync([3, 7, 5]); // Solo estos 3 tags quedarán
+
+// Alternar (toggle)
+$task->tags()->toggle([3, 7]);  // Si existe lo remueve, si no existe lo agrega
+```
+
+**Desde el lado de Tag:**
+
+```php
+$tag = Tag::find(3);
+$tasks = $tag->tasks;  // Todas las tareas con este tag
+
+echo "Tag '{$tag->name}' is used in {$tasks->count()} tasks";
+```
+
+### Eager Loading (Prevenir Problema N+1)
+
+**Problema N+1:**
+
+```php
+// ❌ Problema: Genera 1 + N queries (muy lento)
+$tasks = Task::all();  // 1 query: SELECT * FROM tasks
+
+foreach ($tasks as $task) {
+    echo $task->project->name;  // N queries: SELECT * FROM projects WHERE id = ?
+}
+// Total: 1 + 100 = 101 queries si hay 100 tareas
+```
+
+**Solución: Eager Loading**
+
+```php
+// ✅ Solución: Solo 2 queries (rápido)
+$tasks = Task::with('project')->get();
+// Query 1: SELECT * FROM tasks
+// Query 2: SELECT * FROM projects WHERE id IN (1, 2, 3, ...)
+
+foreach ($tasks as $task) {
+    echo $task->project->name;  // Sin query adicional
+}
+// Total: 2 queries sin importar cuántas tareas
+```
+
+**Eager Loading Múltiple:**
+
+```php
+$tasks = Task::with(['project', 'assignedTo', 'tags', 'comments'])->get();
+
+foreach ($tasks as $task) {
+    echo $task->project->name;      // Sin query
+    echo $task->assignedTo->name;   // Sin query
+    echo $task->tags->count();      // Sin query
+    echo $task->comments->count();  // Sin query
+}
+```
+
+**Eager Loading Anidado:**
+
+```php
+$tasks = Task::with([
+    'project.owner',  // Project y su owner
+    'comments.user',  // Comments y su user
+])->get();
+
+foreach ($tasks as $task) {
+    echo $task->project->owner->name;  // Sin query adicional
+
+    foreach ($task->comments as $comment) {
+        echo $comment->user->name;  // Sin query adicional
+    }
+}
+```
+
+---
+
+## 10.6 Query Scopes (Filtros Reutilizables)
+
+**Query Scopes** son métodos reutilizables para filtrar queries.
+
+### Local Scopes (en el modelo)
+
+```php
+// En Task model
+public function scopePending($query)
+{
+    return $query->where('status', Status::PENDING);
+}
+
+public function scopeInProgress($query)
+{
+    return $query->where('status', Status::IN_PROGRESS);
+}
+
+public function scopeCompleted($query)
+{
+    return $query->where('status', Status::COMPLETED);
+}
+
+public function scopeByPriority($query, Priority $priority)
+{
+    return $query->where('priority', $priority);
+}
+
+public function scopeHighPriority($query)
+{
+    return $query->whereIn('priority', [Priority::HIGH, Priority::CRITICAL]);
+}
+
+public function scopeOverdue($query)
+{
+    return $query->where('due_date', '<', now())
+        ->whereNotIn('status', [Status::COMPLETED]);
+}
+```
+
+### Uso de Scopes
+
+```php
+// Sin scope (largo y repetitivo)
+$tasks = Task::where('status', Status::PENDING)->get();
+
+// Con scope (limpio y reutilizable)
+$tasks = Task::pending()->get();
+
+// Combinando múltiples scopes
+$tasks = Task::pending()
+    ->highPriority()
+    ->where('project_id', 5)
+    ->get();
+
+// Scope con parámetros
+$tasks = Task::byPriority(Priority::HIGH)->get();
+
+// Scopes encadenados
+$tasks = Task::inProgress()
+    ->highPriority()
+    ->overdue()
+    ->with('assignedTo')
+    ->get();
+```
+
+### Ventajas de Scopes
+
+**1. DRY (Don't Repeat Yourself)**
+
+```php
+// ❌ Sin scopes (repites lógica)
+$tasks1 = Task::where('status', Status::PENDING)->get();
+$tasks2 = Task::where('status', Status::PENDING)->where('project_id', 5)->get();
+$tasks3 = Task::where('status', Status::PENDING)->whereIn('priority', [...])->get();
+
+// ✅ Con scopes (reutilizable)
+$tasks1 = Task::pending()->get();
+$tasks2 = Task::pending()->where('project_id', 5)->get();
+$tasks3 = Task::pending()->highPriority()->get();
+```
+
+**2. Legibilidad**
+
+```php
+// ❌ Difícil de leer
+Task::where('due_date', '<', now())
+    ->whereNotIn('status', [Status::COMPLETED])
+    ->get();
+
+// ✅ Fácil de leer
+Task::overdue()->get();
+```
+
+**3. Testeable**
+
+```php
+// Puedes testear scopes independientemente
+$query = Task::pending();
+$sql = $query->toSql();
+$this->assertStringContainsString("status = 'pending'", $sql);
+```
+
+---
+
+## 10.7 Model Events (Ciclo de Vida del Modelo)
+
+Los modelos tienen **eventos** que se disparan automáticamente en ciertas acciones.
+
+### Ejemplo: Tag con Slug Auto-Generation
+
+```php
+// En Tag model
+protected static function boot()
+{
+    parent::boot();
+
+    // Evento: creating (antes de crear en DB)
+    static::creating(function ($tag) {
+        if (empty($tag->slug)) {
+            $tag->slug = Str::slug($tag->name);
+        }
+    });
+
+    // Evento: updating (antes de actualizar en DB)
+    static::updating(function ($tag) {
+        if ($tag->isDirty('name') && empty($tag->slug)) {
+            $tag->slug = Str::slug($tag->name);
+        }
+    });
+}
+```
+
+**Uso:**
+
+```php
+// Crear tag sin especificar slug
+$tag = Tag::create([
+    'name' => 'Backend Development',
+    // slug no especificado
+]);
+
+// Eloquent genera slug automáticamente
+echo $tag->slug;  // "backend-development"
+
+// Actualizar nombre
+$tag->update(['name' => 'Full Stack Development']);
+echo $tag->slug;  // "full-stack-development" (auto-actualizado)
+```
+
+### Eventos Disponibles
+
+| Evento | Cuándo se dispara | Uso común |
+|--------|------------------|-----------|
+| **creating** | Antes de INSERT | Generar slug, UUID, defaults |
+| **created** | Después de INSERT | Enviar notificaciones, logs |
+| **updating** | Antes de UPDATE | Validaciones, auto-actualizaciones |
+| **updated** | Después de UPDATE | Notificaciones, auditoría |
+| **saving** | Antes de INSERT o UPDATE | Validaciones comunes |
+| **saved** | Después de INSERT o UPDATE | Logs, cache invalidation |
+| **deleting** | Antes de DELETE | Validar si puede eliminarse |
+| **deleted** | Después de DELETE | Cleanup, notificaciones |
+| **restoring** | Antes de restore (soft delete) | Validaciones |
+| **restored** | Después de restore | Notificaciones |
+
+### Ejemplo Avanzado: Auditoría Automática
+
+```php
+protected static function boot()
+{
+    parent::boot();
+
+    static::created(function ($model) {
+        Log::info("Task #{$model->id} created", [
+            'title' => $model->title,
+            'user' => auth()->user()->name,
+        ]);
+    });
+
+    static::updated(function ($model) {
+        if ($model->isDirty('status')) {
+            $original = $model->getOriginal('status');
+            $new = $model->status;
+
+            Log::info("Task #{$model->id} status changed", [
+                'from' => $original,
+                'to' => $new,
+                'user' => auth()->user()->name,
+            ]);
+        }
+    });
+}
+```
+
+---
+
+## 10.8 Helper Methods (Métodos de Ayuda)
+
+Los modelos pueden tener métodos que encapsulan lógica de negocio.
+
+### Ejemplo en Task Model
+
+```php
+public function isCompleted(): bool
+{
+    return $this->status === Status::COMPLETED;
+}
+
+public function isOverdue(): bool
+{
+    return $this->due_date && $this->due_date->isPast() && !$this->isCompleted();
+}
+
+public function isBlocked(): bool
+{
+    return $this->status === Status::BLOCKED;
+}
+```
+
+**Uso:**
+
+```php
+$task = Task::find(1);
+
+if ($task->isOverdue()) {
+    echo "⚠️ This task is overdue!";
+}
+
+if ($task->isBlocked()) {
+    echo "🚫 Task is blocked";
+}
+
+if ($task->isCompleted()) {
+    echo "✅ Task completed";
+}
+```
+
+### Más Ejemplos de Helper Methods
+
+```php
+// En Comment model
+public function belongsToUser(int $userId): bool
+{
+    return $this->user_id === $userId;
+}
+
+// Uso
+$comment = Comment::find(1);
+if ($comment->belongsToUser(auth()->id())) {
+    // Usuario puede editar/eliminar su propio comentario
+}
+```
+
+```php
+// En Project model
+public function isActive(): bool
+{
+    return $this->status === 'active';
+}
+
+public function isCompleted(): bool
+{
+    return $this->status === 'completed';
+}
+
+// Uso
+$project = Project::find(5);
+if ($project->isActive()) {
+    // Mostrar proyecto en dashboard
+}
+```
+
+---
+
+## 10.9 Modelo Project (Jerarquía Superior)
+
+### Código Completo (92 líneas)
+
+```php
+<?php
+
+namespace App\Infrastructure\Persistence\Eloquent\Models;
+
+use App\Models\User;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+class Project extends Model
+{
+    use SoftDeletes;
+
+    protected $fillable = [
+        'owner_id',
+        'name',
+        'description',
+        'status',
+        'starts_at',
+        'ends_at',
+    ];
+
+    protected $casts = [
+        'starts_at' => 'datetime',
+        'ends_at' => 'datetime',
+    ];
+
+    // Relationships
+    public function owner(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'owner_id');
+    }
+
+    public function tasks(): HasMany
+    {
+        return $this->hasMany(Task::class);
+    }
+
+    // Query Scopes
+    public function scopeActive($query)
+    {
+        return $query->where('status', 'active');
+    }
+
+    public function scopeArchived($query)
+    {
+        return $query->where('status', 'archived');
+    }
+
+    // Helper Methods
+    public function isActive(): bool
+    {
+        return $this->status === 'active';
+    }
+
+    public function isCompleted(): bool
+    {
+        return $this->status === 'completed';
+    }
+}
+```
+
+### Características Destacadas
+
+**1. Relación con Owner (User)**
+
+```php
+public function owner(): BelongsTo
+{
+    return $this->belongsTo(User::class, 'owner_id');
+}
+```
+
+**Uso:**
+
+```php
+$project = Project::find(5);
+echo "Project owner: {$project->owner->name}";
+
+// Crear proyecto con owner
+$project = Project::create([
+    'owner_id' => auth()->id(),
+    'name' => 'Mobile App',
+    'description' => 'iOS and Android app',
+    'status' => 'active',
+]);
+```
+
+**2. Relación con Tasks**
+
+```php
+$project = Project::with('tasks')->find(5);
+
+echo "Total tasks: {$project->tasks->count()}";
+echo "Completed: {$project->tasks()->completed()->count()}";
+echo "Pending: {$project->tasks()->pending()->count()}";
+
+// Calcular completitud
+$completionRate = ($project->tasks()->completed()->count() / $project->tasks->count()) * 100;
+echo "Completion: {$completionRate}%";
+```
+
+---
+
+## 10.10 Resumen del Capítulo
+
+### Conceptos Clave Aprendidos
+
+1. **5 Modelos Principales**:
+   - Task (núcleo), Project (jerarquía), Comment (interacción), Tag (categorización), User (actores)
+
+2. **3 Tipos de Relationships**:
+   - BelongsTo (N:1): Task → Project
+   - HasMany (1:N): Project → Tasks
+   - BelongsToMany (N:M): Task ↔ Tag (con pivot table)
+
+3. **Casts Avanzados**:
+   - Value Objects como Enums (Status, Priority)
+   - Datetime automático (Carbon instances)
+
+4. **Soft Deletes**:
+   - Eliminación suave con `deleted_at`
+   - Recuperación con `restore()`
+
+5. **Query Scopes**:
+   - Filtros reutilizables (`pending()`, `highPriority()`, `overdue()`)
+   - Encadenables y combinables
+
+6. **Model Events**:
+   - Boot hooks (creating, updating, etc.)
+   - Auto-generation (slug, timestamps)
+
+7. **Helper Methods**:
+   - Encapsulación de lógica (`isCompleted()`, `isOverdue()`)
+
+### Patrones de Diseño
+
+**1. Eager Loading (Prevenir N+1)**
+
+```php
+// ✅ Siempre usa with() para relaciones
+$tasks = Task::with(['project', 'assignedTo', 'tags'])->get();
+```
+
+**2. Scopes para Queries Complejas**
+
+```php
+// ✅ Encapsula lógica en scopes
+Task::pending()->highPriority()->overdue()->get();
+```
+
+**3. Value Objects en Casts**
+
+```php
+// ✅ Usa enums para estados
+protected $casts = [
+    'status' => Status::class,
+    'priority' => Priority::class,
+];
+```
+
+---
+
+**Próximo**: Capítulo 11 - Testing (Unit Tests, Feature Tests, Integration Tests)
+
+---
+
+**Estado del Tutorial:** Capítulos 1-10 de 15 completados ✓
