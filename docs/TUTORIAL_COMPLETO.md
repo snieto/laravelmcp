@@ -14140,3 +14140,1402 @@ En el siguiente capítulo exploraremos la **implementación de Repositories**, p
 ---
 
 **Estado del Tutorial:** Capítulos 1-12 de 15 completados ✓
+
+# Capítulo 13: Repository Implementation - Conectando Domain e Infrastructure
+
+## 13.1 ¿Qué es el Repository Pattern?
+
+El **Repository Pattern** es un patrón de diseño que actúa como una **capa de abstracción** entre la lógica de negocio (Domain) y la capa de persistencia (Database).
+
+### Analogía: El Bibliotecario
+
+Imagina que necesitas un libro de una biblioteca:
+
+**Sin Repository (acceso directo):**
+- Tienes que entrar al depósito
+- Buscar en los estantes específicos
+- Conocer el sistema de clasificación Dewey
+- Manejar libros dañados o perdidos
+- Entender cómo están organizados físicamente
+
+**Con Repository (el bibliotecario):**
+```
+Tú: "Necesito el libro 'Clean Code'"
+Bibliotecario: [Va al depósito, lo busca según su sistema]
+Bibliotecario: "Aquí está tu libro"
+```
+
+El **bibliotecario** es el **Repository**:
+- **Tú no necesitas saber** dónde está físicamente
+- **Tú no necesitas saber** cómo está organizado el depósito
+- **Tú solo pides** lo que necesitas con un lenguaje simple
+- **El bibliotecario se encarga** de todos los detalles
+
+### ¿Por qué usar Repository Pattern?
+
+**Problema sin Repository Pattern:**
+
+```php
+// ❌ Controller con lógica de DB directa
+class TaskController
+{
+    public function index()
+    {
+        // Acoplado a Eloquent
+        $tasks = Task::with(['project', 'assignedTo', 'tags'])
+            ->where('status', 'pending')
+            ->latest()
+            ->get();
+
+        return view('tasks', compact('tasks'));
+    }
+
+    public function highPriority()
+    {
+        // Duplica lógica en múltiples lugares
+        $tasks = Task::with(['project', 'assignedTo', 'tags'])
+            ->where('priority', 'high')
+            ->orWhere('priority', 'critical')
+            ->latest()
+            ->get();
+
+        return view('high-priority', compact('tasks'));
+    }
+}
+
+// ❌ Service también con lógica de DB
+class TaskStatisticsService
+{
+    public function getStats()
+    {
+        // Repite la misma query
+        $highPriority = Task::where('priority', 'high')
+            ->orWhere('priority', 'critical')
+            ->count();
+    }
+}
+```
+
+**Problemas:**
+1. **Acoplamiento**: Si cambias de Eloquent a Doctrine, rompes todo
+2. **Duplicación**: La misma query se repite en Controllers, Services, Tools
+3. **Testing difícil**: No puedes mockear `Task::where(...)`, es estático
+4. **Violación SRP**: Los controllers conocen detalles de la DB
+
+**Solución con Repository Pattern:**
+
+```php
+// ✅ Interface en Domain
+interface TaskRepositoryInterface
+{
+    public function getPending(): Collection;
+    public function getHighPriority(): Collection;
+}
+
+// ✅ Implementación en Infrastructure
+class EloquentTaskRepository implements TaskRepositoryInterface
+{
+    public function getPending(): Collection
+    {
+        return Task::with(['project', 'assignedTo', 'tags'])
+            ->where('status', 'pending')
+            ->latest()
+            ->get();
+    }
+
+    public function getHighPriority(): Collection
+    {
+        return Task::highPriority()  // Query scope
+            ->with(['project', 'assignedTo', 'tags'])
+            ->latest()
+            ->get();
+    }
+}
+
+// ✅ Controller solo depende de la interface
+class TaskController
+{
+    public function __construct(
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {
+    }
+
+    public function index()
+    {
+        $tasks = $this->taskRepository->getPending();
+        return view('tasks', compact('tasks'));
+    }
+
+    public function highPriority()
+    {
+        $tasks = $this->taskRepository->getHighPriority();
+        return view('high-priority', compact('tasks'));
+    }
+}
+
+// ✅ Service también usa la interface
+class TaskStatisticsService
+{
+    public function __construct(
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {
+    }
+
+    public function getStats()
+    {
+        $highPriority = $this->taskRepository->getHighPriority()->count();
+    }
+}
+```
+
+**Beneficios:**
+1. **Desacoplamiento**: Controllers/Services no conocen Eloquent
+2. **Reutilización**: Una query, múltiples consumidores
+3. **Testeable**: Puedes mockear `TaskRepositoryInterface` fácilmente
+4. **Swappable**: Cambiar de Eloquent a Doctrine sin tocar Controllers
+5. **Limpio**: Cada capa tiene su responsabilidad
+
+## 13.2 Arquitectura de Capas
+
+### Estructura del Proyecto
+
+```
+app/
+├── Domain/                                 ← DOMAIN LAYER
+│   └── TaskManagement/
+│       └── Contracts/
+│           └── Repositories/
+│               ├── TaskRepositoryInterface.php      → Interface
+│               ├── ProjectRepositoryInterface.php   → Interface
+│               ├── TagRepositoryInterface.php       → Interface
+│               └── CommentRepositoryInterface.php   → Interface
+│
+├── Infrastructure/                         ← INFRASTRUCTURE LAYER
+│   └── Persistence/
+│       └── Eloquent/
+│           ├── Models/
+│           │   ├── Task.php                → Eloquent Model
+│           │   ├── Project.php
+│           │   └── Tag.php
+│           └── Repositories/
+│               ├── EloquentTaskRepository.php       → Implementación
+│               ├── EloquentProjectRepository.php
+│               ├── EloquentTagRepository.php
+│               └── EloquentCommentRepository.php
+│
+└── Providers/
+    └── RepositoryServiceProvider.php        ← Bindings Interface → Implementación
+```
+
+### Diagrama de Flujo: Dependency Injection
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                         REQUEST FLOW                              │
+│                                                                   │
+│  1. Request llega a TaskToolsServer                               │
+│                            │                                      │
+│                            ▼                                      │
+│  ┌───────────────────────────────────────────────┐              │
+│  │  Tool: CreateTask                             │              │
+│  │                                                │              │
+│  │  public function __construct(                 │              │
+│  │      private readonly TaskRepositoryInterface │              │
+│  │  ) {                                          │              │
+│  │  }                                            │              │
+│  │                                                │              │
+│  │  ✅ Solo conoce la INTERFACE                 │              │
+│  │  ✅ No sabe nada de Eloquent                 │              │
+│  └───────────────────────────────────────────────┘              │
+│                            │                                      │
+│                            │ Laravel Container resuelve           │
+│                            │ dependency injection                 │
+│                            ▼                                      │
+│  ┌───────────────────────────────────────────────┐              │
+│  │  RepositoryServiceProvider                    │              │
+│  │                                                │              │
+│  │  $bindings = [                                │              │
+│  │      TaskRepositoryInterface::class =>        │              │
+│  │          EloquentTaskRepository::class        │              │
+│  │  ];                                           │              │
+│  │                                                │              │
+│  │  ✅ Define el binding                        │              │
+│  └───────────────────────────────────────────────┘              │
+│                            │                                      │
+│                            │ Container instancia                  │
+│                            ▼                                      │
+│  ┌───────────────────────────────────────────────┐              │
+│  │  EloquentTaskRepository                       │              │
+│  │  implements TaskRepositoryInterface           │              │
+│  │                                                │              │
+│  │  public function create(array $data): Task    │              │
+│  │  {                                            │              │
+│  │      return Task::create($data);              │              │
+│  │  }                                            │              │
+│  │                                                │              │
+│  │  ✅ Implementación concreta con Eloquent     │              │
+│  └───────────────────────────────────────────────┘              │
+│                            │                                      │
+│                            ▼                                      │
+│  ┌───────────────────────────────────────────────┐              │
+│  │  Eloquent Model: Task                         │              │
+│  │                                                │              │
+│  │  Task::create([...])                          │              │
+│  │      → INSERT INTO tasks ...                  │              │
+│  │                                                │              │
+│  │  ✅ Interactúa con la base de datos          │              │
+│  └───────────────────────────────────────────────┘              │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Key Points:**
+1. **Tools/Controllers** → Solo conocen la **interface**
+2. **ServiceProvider** → Hace el binding **Interface → Implementation**
+3. **Container** → Resuelve automáticamente y instancia la implementación
+4. **Repository** → Usa **Eloquent** internamente
+5. **Model** → Interactúa con **Database**
+
+## 13.3 TaskRepositoryInterface - Definiendo el Contrato
+
+Archivo: `app/Domain/TaskManagement/Contracts/Repositories/TaskRepositoryInterface.php`
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Domain\TaskManagement\Contracts\Repositories;
+
+use App\Domain\TaskManagement\ValueObjects\Priority;
+use App\Domain\TaskManagement\ValueObjects\Status;
+use App\Infrastructure\Persistence\Eloquent\Models\Task;
+use Illuminate\Database\Eloquent\Collection;
+
+interface TaskRepositoryInterface
+{
+    // ==================== QUERIES ====================
+    
+    /**
+     * Find a task by its ID.
+     */
+    public function findById(int $id): ?Task;
+
+    /**
+     * Get all tasks.
+     */
+    public function all(): Collection;
+
+    /**
+     * Get tasks by project ID.
+     */
+    public function findByProjectId(int $projectId): Collection;
+
+    /**
+     * Get tasks assigned to a specific user.
+     */
+    public function findByAssignedTo(int $userId): Collection;
+
+    /**
+     * Get tasks created by a specific user.
+     */
+    public function findByCreator(int $userId): Collection;
+
+    /**
+     * Get tasks by status.
+     */
+    public function findByStatus(Status $status): Collection;
+
+    /**
+     * Get tasks by priority.
+     */
+    public function findByPriority(Priority $priority): Collection;
+
+    // ==================== CONVENIENCE METHODS ====================
+    
+    /**
+     * Get high priority tasks.
+     */
+    public function getHighPriority(): Collection;
+
+    /**
+     * Get overdue tasks.
+     */
+    public function getOverdue(): Collection;
+
+    /**
+     * Get pending tasks.
+     */
+    public function getPending(): Collection;
+
+    /**
+     * Get in-progress tasks.
+     */
+    public function getInProgress(): Collection;
+
+    /**
+     * Get completed tasks.
+     */
+    public function getCompleted(): Collection;
+
+    // ==================== COMMANDS ====================
+    
+    /**
+     * Create a new task.
+     */
+    public function create(array $data): Task;
+
+    /**
+     * Update an existing task.
+     */
+    public function update(int $id, array $data): bool;
+
+    /**
+     * Delete a task.
+     */
+    public function delete(int $id): bool;
+
+    /**
+     * Update task status.
+     */
+    public function updateStatus(int $id, Status $status): bool;
+
+    /**
+     * Assign task to a user.
+     */
+    public function assign(int $taskId, int $userId): bool;
+
+    // ==================== RELATIONSHIPS ====================
+    
+    /**
+     * Attach tags to a task.
+     */
+    public function attachTags(int $taskId, array $tagIds): void;
+
+    /**
+     * Detach tags from a task.
+     */
+    public function detachTags(int $taskId, array $tagIds): void;
+
+    // ==================== SEARCH ====================
+    
+    /**
+     * Search tasks by title or description.
+     */
+    public function search(string $query): Collection;
+}
+```
+
+### Análisis por Secciones
+
+#### Sección 1: Queries Básicas (Líneas 15-48)
+
+```php
+public function findById(int $id): ?Task;
+public function all(): Collection;
+public function findByProjectId(int $projectId): Collection;
+public function findByAssignedTo(int $userId): Collection;
+```
+
+**¿Qué definen?**
+- Métodos para **leer** datos
+- Retornan `Task` o `Collection<Task>`
+- Usan **type hints** fuertes: `int $id`, `?Task`
+
+**¿Por qué `?Task`?**
+```php
+public function findById(int $id): ?Task;
+```
+- `?` = nullable return type (PHP 7.1+)
+- Puede retornar `null` si no encuentra la tarea
+- **Alternativa**: Lanzar excepción `TaskNotFoundException`
+
+**¿Por qué `Collection` no `array`?**
+```php
+public function all(): Collection;
+```
+- `Collection` es más rico que `array`
+- Tiene métodos: `map()`, `filter()`, `groupBy()`, `sum()`
+- Mantiene consistencia con Eloquent
+
+#### Sección 2: Convenience Methods (Líneas 50-72)
+
+```php
+public function getHighPriority(): Collection;
+public function getOverdue(): Collection;
+public function getPending(): Collection;
+public function getInProgress(): Collection;
+public function getCompleted(): Collection;
+```
+
+**¿Qué son?**
+- Métodos de conveniencia para queries comunes
+- Encapsulan lógica compleja en nombres simples
+- **Reutilizables** en múltiples lugares
+
+**Comparación:**
+
+```php
+// ❌ SIN convenience method
+$highPriority = $taskRepository->findByPriority(Priority::HIGH);
+$critical = $taskRepository->findByPriority(Priority::CRITICAL);
+$combined = $highPriority->merge($critical);
+
+// ✅ CON convenience method
+$highPriority = $taskRepository->getHighPriority();
+```
+
+**¿Por qué son útiles?**
+1. **Expresividad**: `getHighPriority()` es más claro que la lógica manual
+2. **DRY**: Evita repetir la lógica de "high = high OR critical"
+3. **Centralización**: Si cambias la definición de "high priority", lo cambias en un solo lugar
+
+#### Sección 3: Commands (Líneas 74-97)
+
+```php
+public function create(array $data): Task;
+public function update(int $id, array $data): bool;
+public function delete(int $id): bool;
+public function updateStatus(int $id, Status $status): bool;
+public function assign(int $taskId, int $userId): bool;
+```
+
+**¿Qué definen?**
+- Métodos para **escribir** datos (CREATE, UPDATE, DELETE)
+- `create()` retorna `Task` (el objeto creado)
+- `update()`, `delete()` retornan `bool` (éxito/fallo)
+
+**¿Por qué `update()` retorna `bool`?**
+```php
+public function update(int $id, array $data): bool;
+```
+- `true` = actualización exitosa
+- `false` = tarea no encontrada o error
+- **Alternativa**: Retornar `Task|null` o lanzar excepción
+
+**Pattern: Métodos específicos**
+```php
+public function updateStatus(int $id, Status $status): bool;
+public function assign(int $taskId, int $userId): bool;
+```
+- Métodos específicos para operaciones comunes
+- Más expresivos que `update($id, ['status' => $status])`
+- Garantizan type safety con Value Objects
+
+## 13.4 EloquentTaskRepository - Implementación Concreta
+
+Archivo: `app/Infrastructure/Persistence/Eloquent/Repositories/EloquentTaskRepository.php`
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Infrastructure\Persistence\Eloquent\Repositories;
+
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use App\Domain\TaskManagement\ValueObjects\Priority;
+use App\Domain\TaskManagement\ValueObjects\Status;
+use App\Infrastructure\Persistence\Eloquent\Models\Task;
+use Illuminate\Database\Eloquent\Collection;
+
+class EloquentTaskRepository implements TaskRepositoryInterface
+{
+    // ==================== QUERIES ====================
+    
+    public function findById(int $id): ?Task
+    {
+        return Task::with(['project', 'assignedTo', 'createdBy', 'tags', 'comments'])
+            ->find($id);
+    }
+
+    public function all(): Collection
+    {
+        return Task::with(['project', 'assignedTo', 'tags'])
+            ->latest()
+            ->get();
+    }
+
+    public function findByProjectId(int $projectId): Collection
+    {
+        return Task::where('project_id', $projectId)
+            ->with(['assignedTo', 'tags'])
+            ->latest()
+            ->get();
+    }
+
+    public function findByAssignedTo(int $userId): Collection
+    {
+        return Task::where('assigned_to', $userId)
+            ->with(['project', 'tags'])
+            ->latest()
+            ->get();
+    }
+
+    public function findByStatus(Status $status): Collection
+    {
+        return Task::where('status', $status)
+            ->with(['project', 'assignedTo', 'tags'])
+            ->latest()
+            ->get();
+    }
+
+    public function findByPriority(Priority $priority): Collection
+    {
+        return Task::byPriority($priority)  // Query scope
+            ->with(['project', 'assignedTo', 'tags'])
+            ->latest()
+            ->get();
+    }
+
+    // ==================== CONVENIENCE METHODS ====================
+    
+    public function getHighPriority(): Collection
+    {
+        return Task::highPriority()  // Query scope from Task model
+            ->with(['project', 'assignedTo', 'tags'])
+            ->latest()
+            ->get();
+    }
+
+    public function getOverdue(): Collection
+    {
+        return Task::overdue()  // Query scope
+            ->with(['project', 'assignedTo', 'tags'])
+            ->latest()
+            ->get();
+    }
+
+    public function getPending(): Collection
+    {
+        return Task::pending()  // Query scope
+            ->with(['project', 'assignedTo', 'tags'])
+            ->latest()
+            ->get();
+    }
+
+    public function getInProgress(): Collection
+    {
+        return Task::inProgress()  // Query scope
+            ->with(['project', 'assignedTo', 'tags'])
+            ->latest()
+            ->get();
+    }
+
+    public function getCompleted(): Collection
+    {
+        return Task::completed()  // Query scope
+            ->with(['project', 'assignedTo', 'tags'])
+            ->latest()
+            ->get();
+    }
+
+    // ==================== COMMANDS ====================
+    
+    public function create(array $data): Task
+    {
+        return Task::create($data);
+    }
+
+    public function update(int $id, array $data): bool
+    {
+        $task = Task::find($id);
+
+        if (!$task) {
+            return false;
+        }
+
+        return $task->update($data);
+    }
+
+    public function delete(int $id): bool
+    {
+        $task = Task::find($id);
+
+        if (!$task) {
+            return false;
+        }
+
+        return $task->delete();
+    }
+
+    public function updateStatus(int $id, Status $status): bool
+    {
+        return $this->update($id, ['status' => $status]);
+    }
+
+    public function assign(int $taskId, int $userId): bool
+    {
+        return $this->update($taskId, ['assigned_to' => $userId]);
+    }
+
+    // ==================== RELATIONSHIPS ====================
+    
+    public function attachTags(int $taskId, array $tagIds): void
+    {
+        $task = Task::find($taskId);
+
+        if ($task) {
+            $task->tags()->attach($tagIds);
+        }
+    }
+
+    public function detachTags(int $taskId, array $tagIds): void
+    {
+        $task = Task::find($taskId);
+
+        if ($task) {
+            $task->tags()->detach($tagIds);
+        }
+    }
+
+    // ==================== SEARCH ====================
+    
+    public function search(string $query): Collection
+    {
+        return Task::where('title', 'like', "%{$query}%")
+            ->orWhere('description', 'like', "%{$query}%")
+            ->with(['project', 'assignedTo', 'tags'])
+            ->latest()
+            ->get();
+    }
+}
+```
+
+### Análisis Detallado
+
+#### Eager Loading con `with()` (Líneas 17-20)
+
+```php
+public function findById(int $id): ?Task
+{
+    return Task::with(['project', 'assignedTo', 'createdBy', 'tags', 'comments'])
+        ->find($id);
+}
+```
+
+**¿Qué es Eager Loading?**
+
+**SIN Eager Loading (N+1 Problem):**
+```php
+// Query 1: Obtener tarea
+$task = Task::find(1);
+
+// Query 2: Obtener proyecto (lazy loading)
+echo $task->project->name;
+
+// Query 3: Obtener assignee
+echo $task->assignedTo->name;
+
+// Query 4-8: Obtener cada tag (si hay 5 tags)
+foreach ($task->tags as $tag) {
+    echo $tag->name;
+}
+
+// Total: 8 queries para 1 tarea ❌
+```
+
+**CON Eager Loading:**
+```php
+// Query 1: Obtener tarea + todas las relaciones en UNA query
+$task = Task::with(['project', 'assignedTo', 'tags'])->find(1);
+
+// No queries adicionales, ya están cargadas
+echo $task->project->name;        // Ya en memoria
+echo $task->assignedTo->name;     // Ya en memoria
+foreach ($task->tags as $tag) {   // Ya en memoria
+    echo $tag->name;
+}
+
+// Total: 1 query (o 2-3 con joins) ✅
+```
+
+**SQL generado con Eager Loading:**
+```sql
+-- Query principal
+SELECT * FROM tasks WHERE id = 1;
+
+-- Query para project
+SELECT * FROM projects WHERE id IN (5);  -- Solo los IDs necesarios
+
+-- Query para users (assignedTo)
+SELECT * FROM users WHERE id IN (7);
+
+-- Query para tags (many-to-many)
+SELECT tags.*, task_tag.task_id
+FROM tags
+INNER JOIN task_tag ON tags.id = task_tag.tag_id
+WHERE task_tag.task_id IN (1);
+```
+
+**¿Por qué importa?**
+- **Performance**: 1-3 queries vs 10-100 queries
+- **Escalabilidad**: Con 100 tareas, N+1 = 500+ queries
+- **Best Practice**: Siempre eager load relaciones que sabes que usarás
+
+#### Query Scopes (Líneas 65-71)
+
+```php
+public function getHighPriority(): Collection
+{
+    return Task::highPriority()  // Query scope from model
+        ->with(['project', 'assignedTo', 'tags'])
+        ->latest()
+        ->get();
+}
+```
+
+**¿Qué es un Query Scope?**
+
+Un Query Scope es un método en el Model que encapsula lógica de query reutilizable.
+
+**Definido en Task Model (`Task.php`):**
+```php
+class Task extends Model
+{
+    public function scopeHighPriority($query)
+    {
+        return $query->where('priority', Priority::HIGH)
+            ->orWhere('priority', Priority::CRITICAL);
+    }
+
+    public function scopeOverdue($query)
+    {
+        return $query->where('due_date', '<', now())
+            ->whereNotIn('status', [Status::COMPLETED]);
+    }
+
+    public function scopePending($query)
+    {
+        return $query->where('status', Status::PENDING);
+    }
+}
+```
+
+**Uso:**
+```php
+// ❌ SIN scope (lógica duplicada)
+$highPriority = Task::where('priority', Priority::HIGH)
+    ->orWhere('priority', Priority::CRITICAL)
+    ->get();
+
+// ✅ CON scope (reutilizable, expresivo)
+$highPriority = Task::highPriority()->get();
+
+// ✅ Encadenable con otros scopes
+$overdueHighPriority = Task::highPriority()
+    ->overdue()
+    ->get();
+```
+
+**Beneficios:**
+1. **DRY**: Lógica en un solo lugar
+2. **Expresivo**: `highPriority()` es más claro que las condiciones
+3. **Composable**: Puedes encadenar múltiples scopes
+4. **Testeable**: Puedes testear el scope independientemente
+
+#### Commands con Null Checking (Líneas 112-121)
+
+```php
+public function update(int $id, array $data): bool
+{
+    $task = Task::find($id);
+
+    if (!$task) {
+        return false;
+    }
+
+    return $task->update($data);
+}
+```
+
+**¿Por qué no usar `findOrFail()`?**
+
+**Opción 1: Return `false` (usado aquí)**
+```php
+public function update(int $id, array $data): bool
+{
+    $task = Task::find($id);
+    if (!$task) {
+        return false;  // Caller decide qué hacer
+    }
+    return $task->update($data);
+}
+
+// Uso
+if (!$taskRepository->update($taskId, $data)) {
+    return Response::json(['error' => 'Task not found'], 404);
+}
+```
+
+**Opción 2: Throw Exception**
+```php
+public function update(int $id, array $data): bool
+{
+    $task = Task::findOrFail($id);  // Lanza ModelNotFoundException
+    return $task->update($data);
+}
+
+// Uso (con try-catch)
+try {
+    $taskRepository->update($taskId, $data);
+} catch (ModelNotFoundException $e) {
+    return Response::json(['error' => 'Task not found'], 404);
+}
+```
+
+**¿Cuál elegir?**
+
+| **Enfoque** | **Ventajas** | **Desventajas** |
+|-------------|--------------|-----------------|
+| Return `false` | Más control para el caller | Caller debe siempre checkear el return |
+| Throw Exception | Fuerza manejo explícito | Más verboso, requiere try-catch |
+
+**Best Practice**: Depende del contexto
+- **False**: Operaciones opcionales (delete, update)
+- **Exception**: Operaciones críticas que DEBEN existir
+
+#### Relationships con BelongsToMany (Líneas 144-159)
+
+```php
+public function attachTags(int $taskId, array $tagIds): void
+{
+    $task = Task::find($taskId);
+
+    if ($task) {
+        $task->tags()->attach($tagIds);
+    }
+}
+
+public function detachTags(int $taskId, array $tagIds): void
+{
+    $task = Task::find($taskId);
+
+    if ($task) {
+        $task->tags()->detach($tagIds);
+    }
+}
+```
+
+**¿Qué hace `attach()` y `detach()`?**
+
+**Context**: Tasks y Tags tienen relación **BelongsToMany** (many-to-many)
+
+**Tabla pivot: `task_tag`**
+```sql
+CREATE TABLE task_tag (
+    task_id INT,
+    tag_id INT,
+    PRIMARY KEY (task_id, tag_id)
+);
+```
+
+**`attach()` - Agregar relaciones:**
+```php
+$taskRepository->attachTags(1, [5, 7, 9]);
+
+// SQL ejecutado:
+// INSERT INTO task_tag (task_id, tag_id) VALUES
+//     (1, 5),
+//     (1, 7),
+//     (1, 9);
+```
+
+**`detach()` - Remover relaciones:**
+```php
+$taskRepository->detachTags(1, [5, 7]);
+
+// SQL ejecutado:
+// DELETE FROM task_tag
+// WHERE task_id = 1 AND tag_id IN (5, 7);
+```
+
+**`detach()` sin parámetros - Remover TODAS:**
+```php
+$task->tags()->detach();  // Remueve todos los tags de esta tarea
+
+// SQL ejecutado:
+// DELETE FROM task_tag WHERE task_id = 1;
+```
+
+**Otros métodos útiles:**
+```php
+// sync(): Reemplaza TODOS los tags
+$task->tags()->sync([5, 7, 9]);  // Borra todos, luego agrega 5,7,9
+
+// syncWithoutDetaching(): Agrega sin remover existentes
+$task->tags()->syncWithoutDetaching([11, 12]);
+
+// toggle(): Agrega si no existe, remueve si existe
+$task->tags()->toggle([5, 7]);  // Si 5 existe, lo remueve; si 7 no existe, lo agrega
+```
+
+#### Search con LIKE (Líneas 162-169)
+
+```php
+public function search(string $query): Collection
+{
+    return Task::where('title', 'like', "%{$query}%")
+        ->orWhere('description', 'like', "%{$query}%")
+        ->with(['project', 'assignedTo', 'tags'])
+        ->latest()
+        ->get();
+}
+```
+
+**¿Cómo funciona?**
+
+**Búsqueda con `LIKE` y wildcards:**
+```php
+$tasks = $taskRepository->search('authentication');
+
+// SQL ejecutado:
+// SELECT * FROM tasks
+// WHERE title LIKE '%authentication%'
+//    OR description LIKE '%authentication%'
+// ORDER BY created_at DESC;
+```
+
+**¿Qué encuentra?**
+- "Implement **authentication** system" ✅
+- "**Authentication** failed" ✅
+- "User **authentication** and authorization" ✅
+- "Auth module" ❌ (no coincide exactamente)
+
+**Limitaciones de LIKE:**
+1. **Case sensitive** (en MySQL depende de collation)
+2. **No busca palabras parciales** inteligentemente
+3. **Performance**: LIKE con `%query%` no usa índices
+
+**Alternativas para search avanzado:**
+```php
+// Opción 1: Laravel Scout (Algolia, Meilisearch)
+Task::search('authentication')->get();
+
+// Opción 2: Full-text search (MySQL)
+Task::whereRaw('MATCH(title, description) AGAINST(? IN BOOLEAN MODE)', [$query])->get();
+
+// Opción 3: PostgreSQL full-text search
+Task::whereRaw("to_tsvector('english', title || ' ' || description) @@ plainto_tsquery('english', ?)", [$query])->get();
+```
+
+## 13.5 RepositoryServiceProvider - Binding Interface to Implementation
+
+Archivo: `app/Providers/RepositoryServiceProvider.php`
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Providers;
+
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use App\Infrastructure\Persistence\Eloquent\Repositories\EloquentTaskRepository;
+// ... otros imports
+
+use Illuminate\Support\ServiceProvider;
+
+class RepositoryServiceProvider extends ServiceProvider
+{
+    /**
+     * All of the container bindings that should be registered.
+     */
+    public $bindings = [
+        ProjectRepositoryInterface::class => EloquentProjectRepository::class,
+        TaskRepositoryInterface::class => EloquentTaskRepository::class,
+        TagRepositoryInterface::class => EloquentTagRepository::class,
+        CommentRepositoryInterface::class => EloquentCommentRepository::class,
+    ];
+
+    public function register(): void
+    {
+        //
+    }
+
+    public function boot(): void
+    {
+        //
+    }
+}
+```
+
+### Análisis: Container Bindings
+
+**¿Qué hace `$bindings`?**
+
+**Sin el ServiceProvider:**
+```php
+// ❌ Esto NO funciona
+class CreateTask extends Tool
+{
+    public function __construct(
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {
+    }
+}
+
+// Error:
+// "Target [App\Domain\...\TaskRepositoryInterface] is not instantiable."
+// Laravel no sabe QUÉ implementación usar para la interface
+```
+
+**Con el ServiceProvider:**
+```php
+// ✅ Laravel sabe qué clase instanciar
+public $bindings = [
+    TaskRepositoryInterface::class => EloquentTaskRepository::class,
+];
+
+// Cuando Laravel ve TaskRepositoryInterface en un constructor,
+// automáticamente instancia EloquentTaskRepository
+```
+
+**Diagrama de Resolución:**
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Laravel Container                                            │
+│                                                               │
+│  Tool solicita: TaskRepositoryInterface                      │
+│                      │                                        │
+│                      ▼                                        │
+│  Container busca en bindings:                                │
+│  $bindings = [                                               │
+│      TaskRepositoryInterface::class =>                       │
+│          EloquentTaskRepository::class                       │
+│  ]                                                           │
+│                      │                                        │
+│                      ▼                                        │
+│  Container instancia: new EloquentTaskRepository()           │
+│                      │                                        │
+│                      ▼                                        │
+│  Container inyecta en Tool                                   │
+│                                                               │
+│  ✅ Tool recibe EloquentTaskRepository                      │
+│     pero solo conoce TaskRepositoryInterface                 │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Alternativas para registrar bindings:**
+
+**Opción 1: $bindings property (más limpio)**
+```php
+public $bindings = [
+    TaskRepositoryInterface::class => EloquentTaskRepository::class,
+];
+```
+
+**Opción 2: register() method (más flexible)**
+```php
+public function register(): void
+{
+    $this->app->bind(
+        TaskRepositoryInterface::class,
+        EloquentTaskRepository::class
+    );
+}
+```
+
+**Opción 3: singleton() para instancia única**
+```php
+public function register(): void
+{
+    $this->app->singleton(
+        TaskRepositoryInterface::class,
+        EloquentTaskRepository::class
+    );
+    // Misma instancia en toda la aplicación
+}
+```
+
+**¿Cuándo usar singleton?**
+- **Repositories**: Normalmente NO (cada request nueva instancia)
+- **Services stateful**: SI (LoggerService, CacheManager)
+- **Configuración**: SI (AppConfig, FeatureFlags)
+
+## 13.6 Ventajas del Repository Pattern
+
+### Ventaja 1: Testabilidad
+
+**Sin Repository (difícil de testear):**
+```php
+class TaskStatisticsService
+{
+    public function getStats()
+    {
+        // Acoplado a Eloquent, necesita DB real para testear
+        $total = Task::count();
+        $completed = Task::where('status', 'completed')->count();
+
+        return ['total' => $total, 'completed' => $completed];
+    }
+}
+
+// Test (requiere DB)
+class TaskStatisticsServiceTest extends TestCase
+{
+    use RefreshDatabase;  // ❌ Necesita migrar DB
+
+    public function test_get_stats()
+    {
+        Task::factory()->count(10)->create();
+        Task::factory()->count(5)->create(['status' => 'completed']);
+
+        $service = new TaskStatisticsService();
+        $stats = $service->getStats();
+
+        $this->assertEquals(15, $stats['total']);
+    }
+}
+```
+
+**Con Repository (fácil de testear):**
+```php
+class TaskStatisticsService
+{
+    public function __construct(
+        private readonly TaskRepositoryInterface $repository
+    ) {
+    }
+
+    public function getStats()
+    {
+        $total = $this->repository->all()->count();
+        $completed = $this->repository->getCompleted()->count();
+
+        return ['total' => $total, 'completed' => $completed];
+    }
+}
+
+// Test (sin DB, usando mock)
+class TaskStatisticsServiceTest extends TestCase
+{
+    public function test_get_stats()
+    {
+        // ✅ Mock del repository
+        $mock = Mockery::mock(TaskRepositoryInterface::class);
+
+        $mock->shouldReceive('all')
+            ->once()
+            ->andReturn(collect([/* 15 tasks */]));
+
+        $mock->shouldReceive('getCompleted')
+            ->once()
+            ->andReturn(collect([/* 5 tasks */]));
+
+        $service = new TaskStatisticsService($mock);
+        $stats = $service->getStats();
+
+        $this->assertEquals(15, $stats['total']);
+        $this->assertEquals(5, $stats['completed']);
+    }
+}
+```
+
+**Beneficios:**
+- ✅ Test corre en **milisegundos** (no segundos con DB)
+- ✅ No necesita **RefreshDatabase**
+- ✅ No depende de **estado de DB**
+- ✅ Puede testear **casos edge** fácilmente (collections vacíos, etc.)
+
+### Ventaja 2: Swappable (Intercambiable)
+
+**Hoy:** Eloquent (MySQL)
+```php
+public $bindings = [
+    TaskRepositoryInterface::class => EloquentTaskRepository::class,
+];
+```
+
+**Mañana:** Doctrine (PostgreSQL)
+```php
+// Crear nueva implementación
+class DoctrineTaskRepository implements TaskRepositoryInterface
+{
+    public function findById(int $id): ?Task
+    {
+        return $this->entityManager->find(Task::class, $id);
+    }
+    // ... resto de métodos
+}
+
+// Cambiar binding
+public $bindings = [
+    TaskRepositoryInterface::class => DoctrineTaskRepository::class,
+];
+
+// ✅ CERO cambios en Tools, Services, Controllers
+// ✅ Toda la aplicación ahora usa Doctrine
+```
+
+**Pasado mañana:** API externa (Jira, Asana)
+```php
+class JiraTaskRepository implements TaskRepositoryInterface
+{
+    public function __construct(
+        private readonly JiraClient $jiraClient
+    ) {
+    }
+
+    public function findById(int $id): ?Task
+    {
+        $jiraTask = $this->jiraClient->getIssue($id);
+        return $this->mapJiraToTask($jiraTask);
+    }
+
+    // ... implementación que llama a Jira API
+}
+
+// Cambiar binding
+public $bindings = [
+    TaskRepositoryInterface::class => JiraTaskRepository::class,
+];
+
+// ✅ Ahora la app consume tareas desde Jira
+// ✅ Sin cambiar NADA en el Domain layer
+```
+
+### Ventaja 3: Separación de Concerns
+
+**Sin Repository:**
+```php
+class CreateTask extends Tool
+{
+    public function handle(Request $request): Response
+    {
+        // ❌ Tool conoce detalles de DB
+        $task = Task::create([
+            'project_id' => $request->input('project_id'),
+            'title' => $request->input('title'),
+            // ...
+        ]);
+
+        // ❌ Tool conoce relaciones de Eloquent
+        $task->tags()->attach($request->input('tag_ids'));
+
+        // ❌ Tool conoce como eager load
+        $task->load(['project', 'assignedTo', 'tags']);
+
+        return Response::json(['success' => true, 'task' => $task]);
+    }
+}
+```
+
+**Con Repository:**
+```php
+class CreateTask extends Tool
+{
+    public function __construct(
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {
+    }
+
+    public function handle(Request $request): Response
+    {
+        // ✅ Tool solo usa métodos de dominio
+        $task = $this->taskRepository->create([
+            'project_id' => $request->input('project_id'),
+            'title' => $request->input('title'),
+            // ...
+        ]);
+
+        // ✅ Repository maneja la lógica de persistencia
+        $this->taskRepository->attachTags(
+            $task->id,
+            $request->input('tag_ids')
+        );
+
+        return Response::json(['success' => true, 'task' => $task]);
+    }
+}
+```
+
+**Separación clara:**
+- **Tool (Application Layer)**: Orquesta use case, valida input
+- **Repository (Infrastructure)**: Maneja persistencia, queries, relaciones
+- **Model (Domain)**: Define estructura, reglas de negocio
+
+## 13.7 Resumen del Capítulo
+
+**Conceptos Clave Aprendidos:**
+
+1. **Repository Pattern**: Abstracción entre Domain y Database
+2. **Interface → Implementation**: Domain define contrato, Infrastructure implementa
+3. **Dependency Injection**: Laravel Container resuelve automáticamente
+4. **Eager Loading**: `with()` previene N+1 problem
+5. **Query Scopes**: Lógica reutilizable en el Model
+6. **ServiceProvider**: Registra bindings Interface → Implementación
+
+**Archivos del Capítulo:**
+```
+app/
+├── Domain/
+│   └── TaskManagement/
+│       └── Contracts/
+│           └── Repositories/
+│               └── TaskRepositoryInterface.php     (114 líneas)
+├── Infrastructure/
+│   └── Persistence/
+│       └── Eloquent/
+│           └── Repositories/
+│               └── EloquentTaskRepository.php      (171 líneas)
+└── Providers/
+    └── RepositoryServiceProvider.php               (47 líneas)
+```
+
+**Pattern Completo:**
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  DOMAIN LAYER (Business Logic)                             │
+│                                                             │
+│  interface TaskRepositoryInterface {                       │
+│      public function findById(int $id): ?Task;            │
+│      public function getHighPriority(): Collection;       │
+│  }                                                         │
+└────────────────────────────────────────────────────────────┘
+                            │
+                            │ implements
+                            ▼
+┌────────────────────────────────────────────────────────────┐
+│  INFRASTRUCTURE LAYER (Technical Details)                  │
+│                                                             │
+│  class EloquentTaskRepository                              │
+│      implements TaskRepositoryInterface                    │
+│  {                                                         │
+│      public function findById(int $id): ?Task {           │
+│          return Task::with([...])->find($id);             │
+│      }                                                     │
+│  }                                                         │
+└────────────────────────────────────────────────────────────┘
+                            │
+                            │ injected by
+                            ▼
+┌────────────────────────────────────────────────────────────┐
+│  APPLICATION LAYER (Use Cases)                             │
+│                                                             │
+│  class CreateTask extends Tool {                           │
+│      public function __construct(                          │
+│          TaskRepositoryInterface $repository               │
+│      ) {}                                                  │
+│                                                             │
+│      $task = $this->repository->create($data);            │
+│  }                                                         │
+└────────────────────────────────────────────────────────────┘
+```
+
+**Best Practices:**
+
+1. **Siempre usa Eager Loading** cuando sabes que necesitarás relaciones
+2. **Define Query Scopes** para lógica reutilizable
+3. **Retorna Collections** en vez de arrays para mayor flexibilidad
+4. **Usa Type Hints** fuertes (`int`, `?Task`, `Status`)
+5. **Keep Repositories Thin**: Solo queries, no business logic
+
+**Próximos Pasos:**
+
+En el siguiente capítulo exploraremos **Conexión y Uso de MCP Servers**, aprendiendo cómo conectar Claude y otras herramientas a tu aplicación Laravel MCP, probar los servers localmente, y usarlos en producción.
+
+---
+
+**Estado del Tutorial:** Capítulos 1-13 de 15 completados ✓
