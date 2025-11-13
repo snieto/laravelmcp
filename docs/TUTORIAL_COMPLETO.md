@@ -9671,3 +9671,1114 @@ En el Capítulo 9 exploraremos **AnalyticsResourcesServer**, viendo cómo expone
 ---
 
 **Estado del Tutorial:** Capítulos 1-8 de 15 completados ✓
+
+---
+
+# Capítulo 9: AnalyticsResourcesServer - MCP Resources (Datos de Solo Lectura)
+
+## 9.1 ¿Qué son los MCP Resources?
+
+Hasta ahora hemos trabajado con **MCP Tools** (Capítulos 7-8), que son **acciones** que el LLM puede ejecutar. En este capítulo introducimos un concepto fundamental diferente: **MCP Resources**.
+
+### Diferencia entre Tools y Resources
+
+| Aspecto | Tools (Chapters 7-8) | Resources (Chapter 9) |
+|---------|---------------------|----------------------|
+| **Propósito** | Ejecutar acciones | Consultar datos |
+| **Operación** | Write (modifican estado) | Read-only (solo lectura) |
+| **Ejemplos** | create_task, update_task, delete_task | team-metrics, project-metrics, user-productivity |
+| **Parámetros** | JSON Schema con validación | URI patterns (e.g., `/resource/{id}`) |
+| **Cuándo usar** | Para modificar datos | Para consultar información |
+| **Equivalente REST** | POST, PUT, DELETE | GET |
+
+### Analogía: Biblioteca vs Librería de Consulta
+
+**Tools (Biblioteca tradicional):**
+- Puedes **prestar libros** (create)
+- Puedes **devolver libros** (update status)
+- Puedes **reservar libros** (update assignment)
+- Acciones que **modifican el estado del sistema**
+
+**Resources (Librería de Consulta):**
+- Puedes **consultar el catálogo** (team-metrics)
+- Puedes **ver estadísticas de préstamos** (velocity-trends)
+- Puedes **leer reportes de libros atrasados** (overdue-report)
+- Consultas que **no modifican nada**, solo retornan información
+
+---
+
+## 9.2 Anatomía del AnalyticsResourcesServer
+
+```php
+<?php
+
+namespace App\Mcp\Servers;
+
+use Laravel\Mcp\Server;
+
+class AnalyticsResourcesServer extends Server
+{
+    protected string $name = 'Analytics Resources';
+
+    protected string $version = '1.0.0';
+
+    protected string $instructions = <<<'MARKDOWN'
+        # Analytics Resources Server
+
+        This server provides read-only access to analytics and metrics data through MCP Resources.
+
+        ## Available Resources
+
+        1. **team-metrics**: Get overall team performance metrics
+        2. **project-metrics/{project_id}**: Get detailed metrics for a specific project
+        3. **user-productivity/{user_id}**: Get individual user productivity metrics
+        4. **velocity-trends**: Get task velocity and trend analysis
+        5. **overdue-report**: Get list of overdue tasks with analysis
+
+        ## Usage Patterns
+
+        Resources are read-only and automatically refresh with latest data.
+        Use these resources to:
+        - Monitor team performance in real-time
+        - Identify bottlenecks and blockers
+        - Track project health and progress
+    MARKDOWN;
+
+    protected array $tools = [];
+
+    protected array $resources = [
+        \App\Mcp\Resources\TeamMetrics::class,
+        \App\Mcp\Resources\ProjectMetrics::class,
+        \App\Mcp\Resources\UserProductivity::class,
+        \App\Mcp\Resources\VelocityTrends::class,
+        \App\Mcp\Resources\OverdueReport::class,
+    ];
+
+    protected array $prompts = [];
+}
+```
+
+### Elementos Clave
+
+**1. Tools Array vacío**
+```php
+protected array $tools = [];  // No tools in this server!
+```
+
+Este servidor **solo expone Resources**, no Tools. Separación de responsabilidades.
+
+**2. Resources Array (5 recursos)**
+```php
+protected array $resources = [
+    \App\Mcp\Resources\TeamMetrics::class,
+    \App\Mcp\Resources\ProjectMetrics::class,
+    \App\Mcp\Resources\UserProductivity::class,
+    \App\Mcp\Resources\VelocityTrends::class,
+    \App\Mcp\Resources\OverdueReport::class,
+];
+```
+
+Cada recurso expone diferentes vistas de los datos analíticos.
+
+---
+
+## 9.3 Resource 1: TeamMetrics (Métricas Generales del Equipo)
+
+### Propósito
+
+Proporcionar una **vista general del rendimiento del equipo completo**: velocidad, tasa de completitud, distribución de tareas por estado y prioridad.
+
+### Código Completo (106 líneas)
+
+```php
+<?php
+
+namespace App\Mcp\Resources;
+
+use App\Domain\Analytics\Services\MetricsCollector;
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use Carbon\Carbon;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
+use Laravel\Mcp\Server\Resource;
+
+class TeamMetrics extends Resource
+{
+    protected string $uri = 'team-metrics';
+
+    protected string $description = <<<'MARKDOWN'
+        Get overall team performance metrics including task completion rates,
+        status distribution, priority breakdown, and velocity trends.
+    MARKDOWN;
+
+    public function __construct(
+        private readonly MetricsCollector $metricsCollector,
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {
+    }
+
+    public function handle(Request $request): Response
+    {
+        // Get date range from parameters or use defaults (last 30 days)
+        $days = $request->input('days', 30);
+        $endDate = Carbon::now();
+        $startDate = $endDate->copy()->subDays($days);
+
+        // Collect comprehensive metrics
+        $metrics = $this->metricsCollector->collectMetrics($startDate, $endDate);
+
+        // Calculate velocity (tasks completed per day)
+        $tasksCompleted = $metrics['tasks']['completed'] ?? 0;
+        $velocity = $days > 0 ? round($tasksCompleted / $days, 2) : 0;
+
+        // Calculate completion rate
+        $totalTasks = $metrics['tasks']['total'] ?? 1;
+        $completionRate = round(($tasksCompleted / $totalTasks) * 100, 1);
+
+        return Response::json([
+            'period' => [
+                'start' => $startDate->toDateString(),
+                'end' => $endDate->toDateString(),
+                'days' => $days,
+            ],
+            'overview' => [
+                'total_tasks' => $totalTasks,
+                'tasks_completed' => $tasksCompleted,
+                'completion_rate' => $completionRate.'%',
+                'velocity' => $velocity.' tasks/day',
+            ],
+            'status_distribution' => [
+                'pending' => $metrics['tasks']['pending'] ?? 0,
+                'in_progress' => $metrics['tasks']['in_progress'] ?? 0,
+                'review' => $metrics['tasks']['review'] ?? 0,
+                'completed' => $tasksCompleted,
+                'blocked' => $metrics['tasks']['blocked'] ?? 0,
+            ],
+            'priority_breakdown' => [
+                'low' => $metrics['tasks']['priority']['low'] ?? 0,
+                'medium' => $metrics['tasks']['priority']['medium'] ?? 0,
+                'high' => $metrics['tasks']['priority']['high'] ?? 0,
+                'critical' => $metrics['tasks']['priority']['critical'] ?? 0,
+            ],
+            'health_indicators' => [
+                'blocked_tasks' => $metrics['tasks']['blocked'] ?? 0,
+                'overdue_tasks' => $metrics['tasks']['overdue'] ?? 0,
+                'high_priority_pending' => $this->taskRepository->findByPriority('high')
+                    ->where('status', 'pending')->count(),
+            ],
+        ]);
+    }
+}
+```
+
+### Características Clave
+
+#### 1. **URI Simple (sin parámetros)**
+
+```php
+protected string $uri = 'team-metrics';
+```
+
+No usa parámetros en el URI. Es un recurso de **vista general**.
+
+#### 2. **Parámetros Opcionales en Request**
+
+```php
+$days = $request->input('days', 30);
+```
+
+A diferencia de Tools (que usan JSON Schema), Resources reciben parámetros opcionales via `$request->input()`.
+
+**Claude puede llamar:**
+```
+GET team-metrics              // Default: 30 días
+GET team-metrics?days=7       // Últimos 7 días
+GET team-metrics?days=90      // Últimos 90 días
+```
+
+#### 3. **Respuesta Estructurada**
+
+```json
+{
+  "period": { "start": "2025-10-14", "end": "2025-11-13", "days": 30 },
+  "overview": {
+    "total_tasks": 150,
+    "tasks_completed": 98,
+    "completion_rate": "65.3%",
+    "velocity": "3.27 tasks/day"
+  },
+  "status_distribution": {
+    "pending": 15,
+    "in_progress": 22,
+    "review": 8,
+    "completed": 98,
+    "blocked": 7
+  },
+  "priority_breakdown": {
+    "low": 30,
+    "medium": 80,
+    "high": 35,
+    "critical": 5
+  },
+  "health_indicators": {
+    "blocked_tasks": 7,
+    "overdue_tasks": 12,
+    "high_priority_pending": 8
+  }
+}
+```
+
+### Ejemplo de Uso con Claude
+
+```
+User: Show me team performance for last 2 weeks
+
+Claude: I'll fetch team metrics for the last 14 days.
+        [Accesses team-metrics resource with days=14]
+
+Resource Response:
+{
+  "period": { "days": 14, "start": "2025-10-30", "end": "2025-11-13" },
+  "overview": {
+    "total_tasks": 82,
+    "tasks_completed": 52,
+    "completion_rate": "63.4%",
+    "velocity": "3.71 tasks/day"
+  },
+  "status_distribution": {
+    "pending": 8,
+    "in_progress": 14,
+    "review": 5,
+    "completed": 52,
+    "blocked": 3
+  },
+  ...
+}
+
+Claude: Here's your team's performance over the last 2 weeks:
+
+📊 **Overview:**
+- Total tasks: 82
+- Completed: 52 (63.4% completion rate)
+- Velocity: 3.71 tasks/day (strong pace!)
+
+📈 **Current Work:**
+- 8 pending tasks
+- 14 in progress
+- 5 awaiting review
+- ⚠️ 3 blocked tasks
+
+🎯 **Priority Distribution:**
+- 3 critical tasks
+- 18 high priority
+- 45 medium priority
+- 16 low priority
+
+⚠️ **Health Indicators:**
+- 3 blocked tasks (needs attention)
+- 6 overdue tasks (requires review)
+- 4 high-priority tasks still pending
+
+Overall, the team is performing well with a solid velocity of 3.7 tasks/day.
+However, I recommend addressing the 3 blocked tasks to prevent bottlenecks.
+```
+
+---
+
+## 9.4 Resource 2: ProjectMetrics (Métricas por Proyecto)
+
+### Propósito
+
+Proporcionar métricas **detalladas para un proyecto específico**, incluyendo health score, contribuciones del equipo, y varianza de horas.
+
+### Código Completo (182 líneas)
+
+```php
+<?php
+
+namespace App\Mcp\Resources;
+
+use App\Domain\TaskManagement\Contracts\Repositories\ProjectRepositoryInterface;
+use App\Domain\TaskManagement\Contracts\Repositories\TaskRepositoryInterface;
+use Carbon\Carbon;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
+use Laravel\Mcp\Server\Resource;
+
+class ProjectMetrics extends Resource
+{
+    protected string $uri = 'project-metrics/{project_id}';
+
+    protected string $description = <<<'MARKDOWN'
+        Get detailed metrics for a specific project including completion percentage,
+        task breakdown, average completion time, and team member contributions.
+    MARKDOWN;
+
+    public function __construct(
+        private readonly ProjectRepositoryInterface $projectRepository,
+        private readonly TaskRepositoryInterface $taskRepository
+    ) {
+    }
+
+    public function handle(Request $request): Response
+    {
+        $projectId = $request->input('project_id');
+
+        if (!$projectId) {
+            return Response::json([
+                'error' => 'project_id is required',
+                'usage' => 'Provide project_id in the URI: project-metrics/1',
+            ]);
+        }
+
+        $project = $this->projectRepository->findById($projectId);
+
+        if (!$project) {
+            return Response::json(['error' => "Project #{$projectId} not found"]);
+        }
+
+        // Get all tasks for this project
+        $tasks = $this->taskRepository->findByProject($projectId);
+        $totalTasks = $tasks->count();
+
+        // Status breakdown
+        $statusBreakdown = [
+            'pending' => $tasks->where('status', 'pending')->count(),
+            'in_progress' => $tasks->where('status', 'in_progress')->count(),
+            'review' => $tasks->where('status', 'review')->count(),
+            'completed' => $tasks->where('status', 'completed')->count(),
+            'blocked' => $tasks->where('status', 'blocked')->count(),
+        ];
+
+        // Calculate completion percentage
+        $completedTasks = $statusBreakdown['completed'];
+        $completionPercentage = $totalTasks > 0 ? round(($completedTasks / $totalTasks) * 100, 1) : 0;
+
+        // Team member contributions
+        $contributorStats = [];
+        $tasksGroupedByAssignee = $tasks->groupBy('assigned_to');
+        foreach ($tasksGroupedByAssignee as $userId => $userTasks) {
+            if ($userId) {
+                $user = $userTasks->first()->assignedTo;
+                $contributorStats[] = [
+                    'user_id' => $userId,
+                    'user_name' => $user->name ?? 'Unknown',
+                    'total_tasks' => $userTasks->count(),
+                    'completed' => $userTasks->where('status', 'completed')->count(),
+                    'in_progress' => $userTasks->where('status', 'in_progress')->count(),
+                ];
+            }
+        }
+
+        // Calculate estimated vs actual hours
+        $totalEstimatedHours = $tasks->sum('estimated_hours') ?? 0;
+        $totalActualHours = $tasks->sum('actual_hours') ?? 0;
+        $hoursDelta = $totalActualHours - $totalEstimatedHours;
+
+        return Response::json([
+            'project' => [
+                'id' => $project->id,
+                'name' => $project->name,
+                'description' => $project->description,
+                'status' => $project->status,
+                'owner' => $project->owner->name ?? 'Unassigned',
+            ],
+            'summary' => [
+                'total_tasks' => $totalTasks,
+                'completion_percentage' => $completionPercentage.'%',
+                'overdue_tasks' => $tasks->filter(fn($t) => $t->due_date && $t->due_date->isPast())->count(),
+            ],
+            'status_breakdown' => $statusBreakdown,
+            'time_tracking' => [
+                'total_estimated_hours' => $totalEstimatedHours,
+                'total_actual_hours' => $totalActualHours,
+                'hours_delta' => $hoursDelta,
+                'variance_percentage' => $totalEstimatedHours > 0
+                    ? round(($hoursDelta / $totalEstimatedHours) * 100, 1).'%'
+                    : 'N/A',
+            ],
+            'team_contributions' => $contributorStats,
+            'health_score' => $this->calculateProjectHealth(
+                $completionPercentage,
+                $statusBreakdown['blocked']
+            ),
+        ]);
+    }
+
+    private function calculateProjectHealth(float $completionPercentage, int $blockedTasks): array
+    {
+        $score = 100;
+
+        if ($completionPercentage < 30) {
+            $score -= 20;
+        } elseif ($completionPercentage < 50) {
+            $score -= 10;
+        }
+
+        $score -= min($blockedTasks * 10, 30);
+        $score = max(0, $score);
+
+        $status = match(true) {
+            $score >= 90 => 'excellent',
+            $score >= 80 => 'good',
+            $score >= 60 => 'fair',
+            $score >= 40 => 'poor',
+            default => 'critical',
+        };
+
+        return ['score' => $score, 'status' => $status];
+    }
+}
+```
+
+### Características Clave
+
+#### 1. **URI con Parámetro**
+
+```php
+protected string $uri = 'project-metrics/{project_id}';
+```
+
+**Patrón REST-like:** El `{project_id}` es parte del URI.
+
+**Claude puede llamar:**
+```
+GET project-metrics/1    // Proyecto 1
+GET project-metrics/42   // Proyecto 42
+```
+
+#### 2. **Health Score Calculation**
+
+```php
+private function calculateProjectHealth(float $completionPercentage, int $blockedTasks): array
+{
+    $score = 100;
+
+    // Deduct for low completion
+    if ($completionPercentage < 30) {
+        $score -= 20;
+    }
+
+    // Deduct for blocked tasks (max -30)
+    $score -= min($blockedTasks * 10, 30);
+
+    $status = match(true) {
+        $score >= 90 => 'excellent',
+        $score >= 80 => 'good',
+        $score >= 60 => 'fair',
+        $score >= 40 => 'poor',
+        default => 'critical',
+    };
+
+    return ['score' => $score, 'status' => $status];
+}
+```
+
+**Scoring Algorithm:**
+- Comienza con 100 puntos
+- Resta puntos por baja completitud (-10 o -20)
+- Resta por tareas bloqueadas (10 puntos cada una, máximo -30)
+
+#### 3. **Team Contributions**
+
+```php
+$contributorStats = [];
+$tasksGroupedByAssignee = $tasks->groupBy('assigned_to');
+foreach ($tasksGroupedByAssignee as $userId => $userTasks) {
+    $contributorStats[] = [
+        'user_id' => $userId,
+        'user_name' => $user->name,
+        'total_tasks' => $userTasks->count(),
+        'completed' => $userTasks->where('status', 'completed')->count(),
+        'in_progress' => $userTasks->where('status', 'in_progress')->count(),
+    ];
+}
+```
+
+Agrupa tareas por asignado para ver contribuciones individuales al proyecto.
+
+### Ejemplo de Uso
+
+```
+User: How is project #5 doing?
+
+Claude: I'll get detailed metrics for project #5.
+        [Accesses project-metrics/5 resource]
+
+Resource Response:
+{
+  "project": {
+    "id": 5,
+    "name": "E-Commerce Redesign",
+    "status": "active",
+    "owner": "Sarah Johnson"
+  },
+  "summary": {
+    "total_tasks": 45,
+    "completion_percentage": "68.9%",
+    "overdue_tasks": 3
+  },
+  "status_breakdown": {
+    "pending": 5,
+    "in_progress": 8,
+    "review": 1,
+    "completed": 31,
+    "blocked": 0
+  },
+  "time_tracking": {
+    "total_estimated_hours": 240,
+    "total_actual_hours": 275,
+    "hours_delta": 35,
+    "variance_percentage": "14.6%"
+  },
+  "team_contributions": [
+    { "user_name": "Alice Chen", "total_tasks": 18, "completed": 14 },
+    { "user_name": "Bob Martinez", "total_tasks": 15, "completed": 10 },
+    { "user_name": "Carol White", "total_tasks": 12, "completed": 7 }
+  ],
+  "health_score": {
+    "score": 90,
+    "status": "excellent"
+  }
+}
+
+Claude: **Project: E-Commerce Redesign**
+Owner: Sarah Johnson | Status: Active
+
+📊 **Progress:**
+- 31 of 45 tasks completed (68.9%)
+- Health Score: 90/100 (Excellent!)
+- 3 tasks overdue (needs attention)
+
+📈 **Current Status:**
+- 5 pending tasks
+- 8 in progress
+- 1 in review
+- ✅ No blocked tasks
+
+⏱️ **Time Tracking:**
+- Estimated: 240 hours
+- Actual: 275 hours
+- Variance: +35 hours (14.6% over estimate)
+
+👥 **Team Contributions:**
+1. Alice Chen: 14/18 completed (78%)
+2. Bob Martinez: 10/15 completed (67%)
+3. Carol White: 7/12 completed (58%)
+
+💡 **Insights:**
+- Project health is excellent with 90/100 score
+- Team is delivering, but running 14.6% over time estimates
+- Consider reviewing time estimation process
+- Address 3 overdue tasks to maintain momentum
+```
+
+---
+
+## 9.5 Resource 3: UserProductivity (Productividad Individual)
+
+### Propósito
+
+Analizar la productividad de un usuario individual con workload balance, productivity score, y recent activity.
+
+### Código Abreviado (228 líneas - mostrando partes clave)
+
+```php
+class UserProductivity extends Resource
+{
+    protected string $uri = 'user-productivity/{user_id}';
+
+    public function handle(Request $request): Response
+    {
+        $userId = $request->input('user_id');
+        $user = User::find($userId);
+
+        // Get all tasks assigned to this user
+        $allTasks = $this->taskRepository->findByAssignee($userId);
+
+        // Calculate metrics
+        $completionRate = /* ... */;
+        $averageCompletionTime = /* ... */;
+        $velocity = /* ... */;
+        $overdueTasks = /* ... */;
+
+        // Workload balance
+        $currentWorkload = $allTasks->whereIn('status', ['pending', 'in_progress']);
+        $priorityWorkload = [
+            'low' => $currentWorkload->where('priority', 'low')->count(),
+            'medium' => $currentWorkload->where('priority', 'medium')->count(),
+            'high' => $currentWorkload->where('priority', 'high')->count(),
+            'critical' => $currentWorkload->where('priority', 'critical')->count(),
+        ];
+
+        // Recent activity timeline (last 10 tasks)
+        $recentActivity = $allTasks->sortByDesc('updated_at')->take(10)->map(/*...*/);
+
+        return Response::json([
+            'user' => ['id' => $user->id, 'name' => $user->name],
+            'overview' => [
+                'total_tasks' => $totalTasks,
+                'current_workload' => $currentWorkload->count(),
+                'completion_rate' => $completionRate.'%',
+                'velocity' => $velocity.' tasks/day',
+            ],
+            'priority_workload' => $priorityWorkload,
+            'workload_balance' => $this->calculateWorkloadBalance($priorityWorkload),
+            'recent_activity' => $recentActivity,
+            'productivity_score' => $this->calculateProductivityScore(/*...*/),
+        ]);
+    }
+
+    private function calculateWorkloadBalance(array $priorityWorkload): array
+    {
+        $total = array_sum($priorityWorkload);
+        $criticalCount = $priorityWorkload['critical'];
+        $highCount = $priorityWorkload['high'];
+
+        if ($criticalCount > 5 || $highCount > 10) {
+            return [
+                'status' => 'overloaded',
+                'message' => 'High number of critical/high priority tasks',
+                'recommendation' => 'Consider redistributing some tasks',
+            ];
+        } elseif ($total > 20) {
+            return ['status' => 'busy', 'message' => 'Large number of active tasks'];
+        } else {
+            return ['status' => 'balanced', 'message' => 'Workload appears well balanced'];
+        }
+    }
+
+    private function calculateProductivityScore(float $completionRate, float $velocity, int $overdueTasks): array
+    {
+        $score = 0;
+
+        // Completion rate (max 40 points)
+        $score += min($completionRate * 0.4, 40);
+
+        // Velocity (max 30 points)
+        $score += min($velocity * 30, 30);
+
+        // Penalize for overdue tasks (max -30)
+        $score -= min($overdueTasks * 10, 30);
+
+        $score = max(0, min(100, $score));
+
+        $rating = match(true) {
+            $score >= 80 => 'excellent',
+            $score >= 60 => 'good',
+            $score >= 40 => 'fair',
+            default => 'needs_improvement',
+        };
+
+        return ['score' => round($score, 1), 'rating' => $rating];
+    }
+}
+```
+
+### Algoritmos Destacados
+
+#### 1. **Workload Balance (Balanceo de Carga)**
+
+```php
+if ($criticalCount > 5 || $highCount > 10) {
+    return ['status' => 'overloaded', ...];
+} elseif ($total > 20) {
+    return ['status' => 'busy', ...];
+} else {
+    return ['status' => 'balanced', ...];
+}
+```
+
+**Detecta sobrecarga:**
+- Más de 5 tareas critical → Overloaded
+- Más de 10 tareas high → Overloaded
+- Más de 20 tareas activas → Busy
+
+#### 2. **Productivity Score (Puntuación de Productividad)**
+
+```
+Score = (Completion Rate × 0.4) + (Velocity × 30) - (Overdue × 10)
+        ↑                         ↑                 ↑
+    Max 40 puntos            Max 30 puntos     Penalización
+```
+
+**Ejemplo:**
+```
+User con 75% completion rate, 1.2 tasks/day, 2 overdue:
+Score = (75 × 0.4) + (1.2 × 30) - (2 × 10)
+      = 30 + 36 - 20
+      = 46 points → "fair" rating
+```
+
+---
+
+## 9.6 Resource 4: VelocityTrends (Tendencias de Velocidad)
+
+### Propósito
+
+Analizar tendencias de velocidad del equipo con forecasting, consistency analysis, y burndown data.
+
+### Características Destacadas (285 líneas)
+
+```php
+class VelocityTrends extends Resource
+{
+    protected string $uri = 'velocity-trends';
+
+    public function handle(Request $request): Response
+    {
+        $days = $request->input('days', 30);
+        $projectId = $request->input('project_id', null);
+
+        // Calculate daily velocity
+        $dailyVelocity = $this->calculateDailyVelocity($tasks, $startDate, $endDate);
+
+        // Calculate trend (first half vs second half)
+        $trend = $this->calculateTrend($dailyVelocity);
+
+        // Forecast completion date
+        $activeTasks = $allTasks->whereIn('status', ['pending', 'in_progress'])->count();
+        $forecastDays = $averageVelocity > 0 ? ceil($activeTasks / $averageVelocity) : null;
+        $forecastDate = $forecastDays ? Carbon::now()->addDays($forecastDays)->toDateString() : 'N/A';
+
+        // Calculate consistency (standard deviation)
+        $consistency = $this->calculateConsistency($dailyVelocity);
+
+        return Response::json([
+            'velocity_metrics' => [
+                'average_daily' => $averageVelocity.' tasks/day',
+                'trend' => $trend,
+                'consistency' => $consistency,
+            ],
+            'daily_velocity' => $dailyVelocity,
+            'forecast' => [
+                'active_tasks' => $activeTasks,
+                'estimated_days_to_complete' => $forecastDays,
+                'forecast_completion_date' => $forecastDate,
+                'confidence' => $this->calculateForecastConfidence($consistency),
+            ],
+            'insights' => $this->generateInsights($trend, $consistency, $averageVelocity),
+        ]);
+    }
+
+    private function calculateTrend(array $dailyVelocity): array
+    {
+        $midpoint = (int) floor(count($dailyVelocity) / 2);
+        $firstHalf = array_slice($dailyVelocity, 0, $midpoint);
+        $secondHalf = array_slice($dailyVelocity, $midpoint);
+
+        $firstHalfAvg = array_sum(array_column($firstHalf, 'completed')) / count($firstHalf);
+        $secondHalfAvg = array_sum(array_column($secondHalf, 'completed')) / count($secondHalf);
+
+        $change = $secondHalfAvg - $firstHalfAvg;
+        $percentageChange = $firstHalfAvg > 0 ? round(($change / $firstHalfAvg) * 100, 1) : 0;
+
+        $direction = $percentageChange > 10 ? 'increasing'
+                   : ($percentageChange < -10 ? 'decreasing' : 'stable');
+
+        return [
+            'direction' => $direction,
+            'percentage_change' => $percentageChange.'%',
+            'first_half_avg' => round($firstHalfAvg, 2),
+            'second_half_avg' => round($secondHalfAvg, 2),
+        ];
+    }
+
+    private function calculateConsistency(array $dailyVelocity): array
+    {
+        $values = array_column($dailyVelocity, 'completed');
+        $average = array_sum($values) / count($values);
+
+        $variance = 0;
+        foreach ($values as $value) {
+            $variance += pow($value - $average, 2);
+        }
+        $stdDev = sqrt($variance / count($values));
+
+        $status = $stdDev > $average ? 'inconsistent'
+                : ($stdDev > $average * 0.5 ? 'moderate' : 'consistent');
+
+        return [
+            'status' => $status,
+            'standard_deviation' => round($stdDev, 2),
+            'coefficient_of_variation' => round(($stdDev / $average) * 100, 1).'%',
+        ];
+    }
+}
+```
+
+### Algoritmos Avanzados
+
+#### 1. **Trend Analysis (Análisis de Tendencia)**
+
+```
+Period: 30 days
+
+First Half (15 days):     Second Half (15 days):
+Day 1-15                  Day 16-30
+Avg: 3.2 tasks/day        Avg: 4.1 tasks/day
+
+Change: +0.9 tasks/day
+Percentage: +28.1%  →  Trend: "increasing"
+```
+
+#### 2. **Consistency Analysis (Desviación Estándar)**
+
+```
+Daily completions: [2, 4, 3, 5, 2, 4, 3, 2, 4, 5]
+Average: 3.4 tasks/day
+Standard Deviation: 1.07
+
+Coefficient of Variation: (1.07 / 3.4) × 100 = 31.5%
+
+If CV < 50%: "consistent"
+If 50% < CV < 100%: "moderate"
+If CV > 100%: "inconsistent"
+```
+
+#### 3. **Forecasting**
+
+```
+Active Tasks: 45
+Average Velocity: 3.2 tasks/day
+
+Estimated Days = 45 / 3.2 = 14.06 days ≈ 14 days
+
+Forecast Completion Date: Today + 14 days = 2025-11-27
+
+Confidence Level:
+- Consistent velocity → "high" confidence
+- Moderate variance → "medium" confidence
+- Inconsistent → "low" confidence
+```
+
+---
+
+## 9.7 Resource 5: OverdueReport (Reporte de Tareas Atrasadas)
+
+### Propósito
+
+Generar un reporte comprehensivo de todas las tareas atrasadas con risk assessment, agrupación, y recomendaciones accionables.
+
+### Código Abreviado (304 líneas - partes clave)
+
+```php
+class OverdueReport extends Resource
+{
+    protected string $uri = 'overdue-report';
+
+    public function handle(Request $request): Response
+    {
+        // Filter overdue tasks
+        $overdueTasks = $allTasks->filter(function ($task) {
+            return $task->due_date
+                && $task->due_date->isPast()
+                && $task->status !== 'completed';
+        });
+
+        if ($overdueTasks->isEmpty()) {
+            return Response::json([
+                'summary' => ['total_overdue' => 0, 'message' => 'No overdue tasks'],
+                'tasks' => [],
+            ]);
+        }
+
+        // Map tasks with risk assessment
+        $tasksList = $overdueTasks->map(function ($task) {
+            $daysOverdue = abs($task->due_date->diffInDays(Carbon::now()));
+            $risk = $this->assessRisk($task, $daysOverdue);
+
+            return [
+                'task_id' => $task->id,
+                'title' => $task->title,
+                'days_overdue' => $daysOverdue,
+                'risk_level' => $risk['level'],
+                'risk_score' => $risk['score'],
+            ];
+        })->sortByDesc('risk_score')->values();
+
+        // Group by project and assignee
+        $groupedByProject = $overdueTasks->groupBy('project_id')->map(/*...*/);
+        $groupedByAssignee = $overdueTasks->groupBy('assigned_to')->map(/*...*/);
+
+        // Generate recommendations
+        $recommendations = $this->generateRecommendations([
+            'total' => $totalOverdue,
+            'critical' => $criticalOverdue,
+            'blocked' => $blockedOverdue,
+        ]);
+
+        return Response::json([
+            'summary' => [
+                'total_overdue' => $totalOverdue,
+                'critical_priority' => $criticalOverdue,
+                'average_days_overdue' => $avgDaysOverdue,
+            ],
+            'impact_assessment' => $this->calculateImpact($overdueTasks),
+            'tasks' => $tasksList,
+            'grouped_by_project' => $groupedByProject,
+            'grouped_by_assignee' => $groupedByAssignee,
+            'recommendations' => $recommendations,
+            'urgency_level' => $this->determineUrgencyLevel(/*...*/),
+        ]);
+    }
+
+    private function assessRisk($task, int $daysOverdue): array
+    {
+        $score = 0;
+
+        // Days overdue (max 40 points)
+        if ($daysOverdue > 30) {
+            $score += 40;
+        } elseif ($daysOverdue > 14) {
+            $score += 30;
+        } elseif ($daysOverdue > 7) {
+            $score += 20;
+        } else {
+            $score += 10;
+        }
+
+        // Priority (max 30 points)
+        $score += match ($task->priority->value) {
+            'critical' => 30,
+            'high' => 20,
+            'medium' => 10,
+            'low' => 5,
+        };
+
+        // Status (max 30 points)
+        if ($task->status === 'blocked') {
+            $score += 30;
+        }
+
+        $level = $score >= 70 ? 'critical'
+               : ($score >= 50 ? 'high'
+               : ($score >= 30 ? 'medium' : 'low'));
+
+        return ['score' => $score, 'level' => $level];
+    }
+
+    private function generateRecommendations(array $stats): array
+    {
+        $recommendations = [];
+
+        if ($stats['critical'] > 0) {
+            $recommendations[] = [
+                'priority' => 'urgent',
+                'action' => 'Immediately address '.$stats['critical'].' critical overdue tasks',
+                'reason' => 'Critical tasks pose highest risk to project success',
+            ];
+        }
+
+        if ($stats['blocked'] > 0) {
+            $recommendations[] = [
+                'priority' => 'high',
+                'action' => 'Unblock '.$stats['blocked'].' blocked tasks',
+                'reason' => 'Blocked tasks prevent progress on dependent work',
+            ];
+        }
+
+        return $recommendations;
+    }
+}
+```
+
+### Risk Scoring Algorithm
+
+```
+Risk Score = Days Overdue (40 max) + Priority (30 max) + Status (30 max)
+
+Example:
+Task: "Fix payment gateway"
+- 25 days overdue → +40 points
+- Priority: critical → +30 points
+- Status: blocked → +30 points
+──────────────────────────
+Total: 100 points → Risk Level: CRITICAL
+
+Urgency Levels:
+- 0-29:  low risk
+- 30-49: medium risk
+- 50-69: high risk
+- 70+:   CRITICAL risk
+```
+
+---
+
+## 9.8 Comparación de los 5 Resources
+
+| Resource | URI Pattern | Parameters | Primary Metric | Special Feature |
+|----------|------------|------------|----------------|-----------------|
+| **TeamMetrics** | `team-metrics` | days (optional) | Velocity, completion rate | Health indicators |
+| **ProjectMetrics** | `project-metrics/{id}` | project_id (required) | Completion %, health score | Team contributions |
+| **UserProductivity** | `user-productivity/{id}` | user_id (required) | Productivity score | Workload balance |
+| **VelocityTrends** | `velocity-trends` | days, project_id | Trend analysis | Forecasting |
+| **OverdueReport** | `overdue-report` | None | Overdue count | Risk assessment |
+
+---
+
+## 9.9 Resumen del Capítulo
+
+### Conceptos Clave Aprendidos
+
+1. **MCP Resources vs Tools**:
+   - Resources = Read-only data sources
+   - Tools = Write operations (actions)
+
+2. **URI Patterns**:
+   - Simple: `team-metrics`
+   - Parametrized: `project-metrics/{project_id}`
+
+3. **5 Resources Analíticos**:
+   - TeamMetrics: Vista general del equipo
+   - ProjectMetrics: Métricas por proyecto con health score
+   - UserProductivity: Análisis individual con workload balance
+   - VelocityTrends: Tendencias y forecasting
+   - OverdueReport: Tareas atrasadas con risk assessment
+
+4. **Algoritmos Avanzados**:
+   - Health scoring
+   - Risk assessment
+   - Trend analysis (first/second half comparison)
+   - Consistency calculation (standard deviation)
+   - Forecasting (velocity-based)
+
+### Patrones de Diseño
+
+**1. Read-Only by Nature**
+
+```php
+// Resources NEVER modify data
+public function handle(Request $request): Response
+{
+    $data = $this->repository->findSomething();  // Read only
+    return Response::json($data);                // Return data
+}
+```
+
+**2. URI-Based Routing**
+
+```php
+protected string $uri = 'resource/{param}';
+$param = $request->input('param');  // Extract from URI
+```
+
+**3. Comprehensive Responses**
+
+```json
+{
+  "summary": {},
+  "details": {},
+  "breakdowns": {},
+  "recommendations": [],
+  "insights": []
+}
+```
+
+---
+
+**Próximo**: Capítulo 10 - Eloquent Models y Relationships en Profundidad
+
+---
+
+**Estado del Tutorial:** Capítulos 1-9 de 15 completados ✓
