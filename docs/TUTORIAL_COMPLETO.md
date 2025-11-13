@@ -2014,3 +2014,1281 @@ En el Capítulo 3 exploraremos la **Arquitectura del Proyecto** completa, incluy
 ---
 
 **Estado del Tutorial:** Capítulos 1-2 de 15 completados ✓
+
+---
+
+# Capítulo 3: Arquitectura del Proyecto
+
+## 3.1 Introducción a Domain-Driven Design (DDD)
+
+**Domain-Driven Design** es un enfoque de desarrollo de software que pone el foco en el **dominio del negocio** (las reglas y lógica de tu aplicación) en el centro de todo.
+
+### ¿Por qué DDD?
+
+**Problema común sin DDD:**
+```php
+// ❌ Todo mezclado en un controlador
+class TaskController {
+    public function update(Request $request, $id) {
+        $task = Task::find($id);
+
+        // Validación
+        if (!$task) return abort(404);
+
+        // Lógica de negocio mezclada
+        if ($task->status == 'completed' && $request->status == 'pending') {
+            return back()->with('error', 'No puedes reabrir una tarea completada');
+        }
+
+        // Más lógica
+        $task->status = $request->status;
+        $task->save();
+
+        // Notificación
+        Mail::send(...);
+
+        return back();
+    }
+}
+```
+
+**Problemas:**
+- ❌ Lógica de negocio en el controlador
+- ❌ Difícil de testear
+- ❌ No reutilizable
+- ❌ Violación de SRP (Single Responsibility Principle)
+
+**Solución con DDD:**
+```php
+// ✅ Controlador limpio
+class TaskController {
+    public function update(
+        Request $request,
+        $id,
+        TaskStatusManager $statusManager,
+        TaskRepositoryInterface $repository
+    ) {
+        $task = $repository->findById($id);
+        if (!$task) return abort(404);
+
+        try {
+            $statusManager->transitionTo($task, Status::from($request->status));
+            return back()->with('success', 'Tarea actualizada');
+        } catch (InvalidArgumentException $e) {
+            return back()->with('error', $e->getMessage());
+        }
+    }
+}
+
+// ✅ Lógica de negocio en servicio de dominio
+class TaskStatusManager {
+    public function transitionTo(Task $task, Status $newStatus): bool {
+        if (!$task->status->canTransitionTo($newStatus)) {
+            throw new InvalidArgumentException(
+                "Cannot transition from {$task->status->value} to {$newStatus->value}"
+            );
+        }
+
+        return $this->taskRepository->updateStatus($task->id, $newStatus);
+    }
+}
+```
+
+**Ventajas:**
+- ✅ Lógica de negocio aislada y testeable
+- ✅ Controlador simple y enfocado
+- ✅ Reutilizable en APIs, comandos, MCP Tools, etc.
+- ✅ Fácil de entender y mantener
+
+### Conceptos Clave de DDD
+
+**1. Domain (Dominio)**
+El corazón de tu aplicación. Contiene:
+- **Entities:** Objetos con identidad (Task, Project, User)
+- **Value Objects:** Objetos sin identidad (Status, Priority, Email)
+- **Domain Services:** Lógica de negocio compleja
+- **Repository Interfaces:** Contratos para acceso a datos
+
+**2. Bounded Context (Contexto Delimitado)**
+Una frontera lógica que separa diferentes partes del dominio.
+
+**Ejemplo en TaskMaster AI:**
+- `TaskManagement`: Todo relacionado con tareas y proyectos
+- `AIIntegration`: Todo relacionado con IA y OpenAI
+- `Analytics`: Todo relacionado con métricas y reportes
+
+Cada contexto puede tener su propio modelo de `Task` si es necesario, con diferentes atributos y comportamientos.
+
+**3. Ubiquitous Language (Lenguaje Ubicuo)**
+Un lenguaje común entre desarrolladores y expertos del dominio.
+
+**Ejemplo:**
+- ✅ "Una tarea en estado 'pending' puede transicionar a 'in_progress'"
+- ❌ "Un registro con status 1 puede cambiar a status 2"
+
+El código debe usar el mismo lenguaje que el negocio.
+
+## 3.2 Los Tres Bounded Contexts del Proyecto
+
+El proyecto TaskMaster AI se divide en 3 bounded contexts independientes:
+
+### 1. **TaskManagement Context**
+
+**Responsabilidad:** Gestión completa del ciclo de vida de tareas y proyectos.
+
+**Estructura:**
+```
+app/Domain/TaskManagement/
+├── Contracts/
+│   └── Repositories/
+│       ├── TaskRepositoryInterface.php
+│       ├── ProjectRepositoryInterface.php
+│       ├── TagRepositoryInterface.php
+│       └── CommentRepositoryInterface.php
+├── Services/
+│   ├── TaskStatusManager.php
+│   └── TaskPriorityCalculator.php
+└── ValueObjects/
+    ├── Status.php
+    └── Priority.php
+```
+
+**Entidades principales:**
+- `Task`: Una tarea con título, descripción, estado, prioridad
+- `Project`: Un proyecto que agrupa tareas
+- `Tag`: Etiqueta para categorizar tareas
+- `Comment`: Comentario en una tarea
+
+**Value Objects:**
+- `Status`: Estado de la tarea (pending, in_progress, review, completed, blocked)
+- `Priority`: Prioridad (low, medium, high, critical)
+
+**Servicios de dominio:**
+- `TaskStatusManager`: Gestiona transiciones de estado
+- `TaskPriorityCalculator`: Calcula prioridad sugerida
+
+**Reglas de negocio:**
+- Una tarea `completed` solo puede transicionar a `in_progress` (reabrir)
+- Una tarea `pending` no puede transicionar directamente a `review`
+- Cada transición de estado es validada
+- Las prioridades tienen scores para comparación
+
+**Ejemplo de código:**
+```php
+// app/Domain/TaskManagement/ValueObjects/Status.php
+enum Status: string
+{
+    case PENDING = 'pending';
+    case IN_PROGRESS = 'in_progress';
+    case REVIEW = 'review';
+    case COMPLETED = 'completed';
+    case BLOCKED = 'blocked';
+
+    public function canTransitionTo(self $newStatus): bool
+    {
+        return match($this) {
+            self::PENDING => in_array($newStatus, [
+                self::IN_PROGRESS,
+                self::BLOCKED,
+            ]),
+            self::IN_PROGRESS => in_array($newStatus, [
+                self::REVIEW,
+                self::BLOCKED,
+                self::PENDING,
+            ]),
+            self::REVIEW => in_array($newStatus, [
+                self::COMPLETED,
+                self::IN_PROGRESS,
+                self::BLOCKED,
+            ]),
+            self::COMPLETED => in_array($newStatus, [
+                self::IN_PROGRESS, // Reabrir tarea
+            ]),
+            self::BLOCKED => in_array($newStatus, [
+                self::PENDING,
+                self::IN_PROGRESS,
+            ]),
+        };
+    }
+
+    public function label(): string
+    {
+        return match($this) {
+            self::PENDING => 'Pendiente',
+            self::IN_PROGRESS => 'En Progreso',
+            self::REVIEW => 'En Revisión',
+            self::COMPLETED => 'Completada',
+            self::BLOCKED => 'Bloqueada',
+        };
+    }
+}
+```
+
+### 2. **AIIntegration Context**
+
+**Responsabilidad:** Integración con servicios de IA (OpenAI) para generar contenido y análisis.
+
+**Estructura:**
+```
+app/Domain/AIIntegration/
+├── Services/
+│   ├── OpenAIService.php
+│   ├── TaskDescriptionGenerator.php
+│   ├── PromptBuilder.php
+│   └── ProductivityAnalyzer.php
+└── Exceptions/
+    └── OpenAIException.php
+```
+
+**Servicios:**
+- `OpenAIService`: Cliente para llamadas a OpenAI API
+- `TaskDescriptionGenerator`: Genera descripciones de tareas con IA
+- `PromptBuilder`: Construye prompts estructurados
+- `ProductivityAnalyzer`: Analiza productividad con IA
+
+**Reglas de negocio:**
+- Validación de API key antes de llamadas
+- Manejo de rate limits de OpenAI
+- Fallback cuando la API no está disponible
+- Caché de respuestas costosas
+
+**Ejemplo de código:**
+```php
+// app/Domain/AIIntegration/Services/TaskDescriptionGenerator.php
+class TaskDescriptionGenerator
+{
+    public function __construct(
+        private readonly OpenAIService $openai,
+        private readonly PromptBuilder $promptBuilder
+    ) {}
+
+    public function generate(string $title, string $context = ''): string
+    {
+        // Construir prompt estructurado
+        $prompt = $this->promptBuilder->buildTaskDescriptionPrompt([
+            'title' => $title,
+            'context' => $context,
+        ]);
+
+        try {
+            // Llamar a OpenAI
+            $response = $this->openai->complete($prompt, [
+                'model' => 'gpt-4-turbo-preview',
+                'max_tokens' => 500,
+                'temperature' => 0.7,
+            ]);
+
+            return $response['choices'][0]['message']['content'];
+
+        } catch (OpenAIException $e) {
+            // Fallback: retornar contexto si IA falla
+            return $context ?: "Task: {$title}";
+        }
+    }
+}
+```
+
+### 3. **Analytics Context**
+
+**Responsabilidad:** Recolección, cálculo y presentación de métricas y reportes.
+
+**Estructura:**
+```
+app/Domain/Analytics/
+└── Services/
+    ├── MetricsCollector.php
+    └── ReportGenerator.php
+```
+
+**Servicios:**
+- `MetricsCollector`: Recolecta métricas del sistema
+- `ReportGenerator`: Genera reportes formateados
+
+**Métricas calculadas:**
+- Velocity del equipo (tareas por día)
+- Completion rate (% de tareas completadas)
+- Average task age (edad promedio de tareas)
+- Overdue tasks (tareas vencidas)
+- Status distribution (distribución por estado)
+- Priority breakdown (distribución por prioridad)
+
+**Ejemplo de código:**
+```php
+// app/Domain/Analytics/Services/MetricsCollector.php
+class MetricsCollector
+{
+    public function __construct(
+        private readonly TaskRepositoryInterface $taskRepository,
+        private readonly ProjectRepositoryInterface $projectRepository
+    ) {}
+
+    public function collectMetrics(Carbon $startDate, Carbon $endDate): array
+    {
+        $tasks = $this->taskRepository->all();
+        $periodTasks = $tasks->filter(fn($t) =>
+            $t->created_at >= $startDate && $t->created_at <= $endDate
+        );
+
+        return [
+            'tasks' => [
+                'total' => $tasks->count(),
+                'pending' => $tasks->where('status', 'pending')->count(),
+                'in_progress' => $tasks->where('status', 'in_progress')->count(),
+                'review' => $tasks->where('status', 'review')->count(),
+                'completed' => $tasks->where('status', 'completed')->count(),
+                'blocked' => $tasks->where('status', 'blocked')->count(),
+                'overdue' => $tasks->filter(fn($t) => $t->isOverdue())->count(),
+                'priority' => [
+                    'low' => $tasks->where('priority', 'low')->count(),
+                    'medium' => $tasks->where('priority', 'medium')->count(),
+                    'high' => $tasks->where('priority', 'high')->count(),
+                    'critical' => $tasks->where('priority', 'critical')->count(),
+                ],
+            ],
+            'projects' => [
+                'total' => $this->projectRepository->all()->count(),
+                'active' => $this->projectRepository->getActive()->count(),
+            ],
+        ];
+    }
+}
+```
+
+### Comunicación Entre Contextos
+
+Los bounded contexts se comunican a través de **interfaces bien definidas**:
+
+```
+┌────────────────────┐
+│  TaskManagement    │
+│                    │
+│  - Task            │
+│  - Project         │
+│  - TaskRepository  │
+└────────────────────┘
+         ↓ usa
+┌────────────────────┐
+│  AIIntegration     │
+│                    │
+│  - Llama a OpenAI  │
+│  - Genera contenido│
+└────────────────────┘
+         ↓ usa
+┌────────────────────┐
+│  Analytics         │
+│                    │
+│  - Lee tareas      │
+│  - Calcula métricas│
+└────────────────────┘
+```
+
+**Ejemplo de comunicación:**
+```php
+// MCP Tool que usa múltiples contextos
+class GenerateTaskDescription extends Tool
+{
+    public function __construct(
+        private readonly TaskRepositoryInterface $taskRepo,        // TaskManagement
+        private readonly TaskDescriptionGenerator $generator,      // AIIntegration
+        private readonly MetricsCollector $metricsCollector       // Analytics
+    ) {}
+
+    public function handle(Request $request): Response
+    {
+        // 1. Obtener tarea (TaskManagement)
+        $task = $this->taskRepo->findById($request->input('task_id'));
+
+        // 2. Generar descripción con IA (AIIntegration)
+        $description = $this->generator->generate($task->title);
+
+        // 3. Actualizar tarea
+        $this->taskRepo->update($task->id, ['description' => $description]);
+
+        // 4. Registrar métrica (Analytics)
+        $this->metricsCollector->recordAIUsage('task_description');
+
+        return Response::json(['success' => true, 'description' => $description]);
+    }
+}
+```
+
+## 3.3 Las Cuatro Capas de la Arquitectura
+
+El proyecto sigue una arquitectura en capas (Layered Architecture) combinada con DDD:
+
+```
+┌─────────────────────────────────────┐
+│   Presentation Layer                │  ← UI, Controladores, MCP Tools
+├─────────────────────────────────────┤
+│   Application Layer                 │  ← Casos de uso, Coordinación
+├─────────────────────────────────────┤
+│   Domain Layer                      │  ← Lógica de negocio, Reglas
+├─────────────────────────────────────┤
+│   Infrastructure Layer              │  ← DB, APIs externas, Framework
+└─────────────────────────────────────┘
+```
+
+### Capa 1: Domain Layer (Dominio)
+
+**Ubicación:** `app/Domain/`
+
+**Responsabilidad:** Contiene la lógica de negocio pura, independiente de frameworks y tecnologías.
+
+**Contenido:**
+- **Value Objects:** Objetos inmutables sin identidad
+- **Entities:** Objetos con identidad (aunque usamos Eloquent models)
+- **Repository Interfaces:** Contratos para acceso a datos
+- **Domain Services:** Lógica de negocio compleja
+- **Domain Events:** Eventos del dominio
+- **Exceptions:** Excepciones del dominio
+
+**Características:**
+- ✅ No depende de Laravel
+- ✅ No depende de Eloquent
+- ✅ No depende de ninguna librería externa (excepto PHP)
+- ✅ 100% testeable con unit tests
+- ✅ Representa el conocimiento del negocio
+
+**Ejemplo completo:**
+```php
+// app/Domain/TaskManagement/ValueObjects/Priority.php
+enum Priority: string
+{
+    case LOW = 'low';
+    case MEDIUM = 'medium';
+    case HIGH = 'high';
+    case CRITICAL = 'critical';
+
+    public function score(): int
+    {
+        return match($this) {
+            self::LOW => 1,
+            self::MEDIUM => 2,
+            self::HIGH => 3,
+            self::CRITICAL => 4,
+        };
+    }
+
+    public function isHigherThan(self $other): bool
+    {
+        return $this->score() > $other->score();
+    }
+
+    public function label(): string
+    {
+        return match($this) {
+            self::LOW => 'Baja',
+            self::MEDIUM => 'Media',
+            self::HIGH => 'Alta',
+            self::CRITICAL => 'Crítica',
+        };
+    }
+
+    public function color(): string
+    {
+        return match($this) {
+            self::LOW => 'green',
+            self::MEDIUM => 'yellow',
+            self::HIGH => 'orange',
+            self::CRITICAL => 'red',
+        };
+    }
+}
+```
+
+**Por qué Value Objects:**
+- ✅ Encapsulan validación (no puedes crear un Priority inválido)
+- ✅ Tienen comportamiento (score(), isHigherThan())
+- ✅ Son inmutables (no se pueden modificar)
+- ✅ Son tipo-seguros (`Priority::HIGH` vs `"high"`)
+
+### Capa 2: Infrastructure Layer (Infraestructura)
+
+**Ubicación:** `app/Infrastructure/`
+
+**Responsabilidad:** Implementaciones concretas de los contratos del dominio usando tecnologías específicas.
+
+**Contenido:**
+- **Eloquent Models:** Modelos de base de datos
+- **Repository Implementations:** Implementaciones con Eloquent
+- **External Services:** Clientes para APIs externas
+- **File System:** Acceso a archivos
+- **Cache:** Implementación de caché
+
+**Características:**
+- ✅ Depende del Domain Layer
+- ✅ Usa Laravel/Eloquent
+- ✅ Implementa interfaces del dominio
+- ✅ Maneja detalles técnicos
+
+**Ejemplo completo:**
+```php
+// app/Infrastructure/Persistence/Eloquent/Repositories/EloquentTaskRepository.php
+class EloquentTaskRepository implements TaskRepositoryInterface
+{
+    public function findById(int $id): ?Task
+    {
+        return Task::with(['project', 'assignedTo', 'creator', 'tags', 'comments'])
+            ->find($id);
+    }
+
+    public function findByStatus(Status $status): Collection
+    {
+        return Task::where('status', $status->value)
+            ->with(['project', 'assignedTo'])
+            ->orderBy('created_at', 'desc')
+            ->get();
+    }
+
+    public function findByProject(int $projectId): Collection
+    {
+        return Task::where('project_id', $projectId)
+            ->with(['assignedTo', 'tags'])
+            ->orderBy('created_at', 'desc')
+            ->get();
+    }
+
+    public function create(array $data): Task
+    {
+        return Task::create([
+            'project_id' => $data['project_id'],
+            'title' => $data['title'],
+            'description' => $data['description'] ?? null,
+            'status' => $data['status'],
+            'priority' => $data['priority'],
+            'created_by' => $data['created_by'],
+            'assigned_to' => $data['assigned_to'] ?? null,
+            'due_date' => $data['due_date'] ?? null,
+            'estimated_hours' => $data['estimated_hours'] ?? null,
+        ]);
+    }
+
+    public function update(int $id, array $data): bool
+    {
+        $task = $this->findById($id);
+        if (!$task) {
+            return false;
+        }
+
+        return $task->update($data);
+    }
+
+    public function updateStatus(int $id, Status $status): bool
+    {
+        return $this->update($id, ['status' => $status]);
+    }
+
+    public function assign(int $taskId, ?int $userId): bool
+    {
+        return $this->update($taskId, ['assigned_to' => $userId]);
+    }
+
+    public function attachTags(int $taskId, array $tagIds): void
+    {
+        $task = $this->findById($taskId);
+        if ($task) {
+            $task->tags()->sync($tagIds);
+        }
+    }
+
+    public function search(string $query): Collection
+    {
+        return Task::where('title', 'like', "%{$query}%")
+            ->orWhere('description', 'like', "%{$query}%")
+            ->with(['project', 'assignedTo'])
+            ->get();
+    }
+
+    public function all(): Collection
+    {
+        return Task::with(['project', 'assignedTo'])->get();
+    }
+}
+```
+
+**Eloquent Models:**
+```php
+// app/Infrastructure/Persistence/Eloquent/Models/Task.php
+class Task extends Model
+{
+    use HasFactory, SoftDeletes;
+
+    protected $fillable = [
+        'project_id',
+        'title',
+        'description',
+        'status',
+        'priority',
+        'created_by',
+        'assigned_to',
+        'due_date',
+        'estimated_hours',
+        'actual_hours',
+    ];
+
+    protected $casts = [
+        'status' => Status::class,        // Cast automático a Value Object
+        'priority' => Priority::class,    // Cast automático a Value Object
+        'due_date' => 'datetime',
+    ];
+
+    // Relaciones
+    public function project(): BelongsTo
+    {
+        return $this->belongsTo(Project::class);
+    }
+
+    public function assignedTo(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'assigned_to');
+    }
+
+    public function creator(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function tags(): BelongsToMany
+    {
+        return $this->belongsToMany(Tag::class, 'task_tag');
+    }
+
+    public function comments(): HasMany
+    {
+        return $this->hasMany(Comment::class);
+    }
+
+    // Métodos de ayuda
+    public function isOverdue(): bool
+    {
+        return $this->due_date
+            && $this->due_date->isPast()
+            && $this->status !== Status::COMPLETED;
+    }
+}
+```
+
+**¿Por qué usar Eloquent si queremos DDD puro?**
+- ✅ Pragmatismo: Eloquent es poderoso y rápido
+- ✅ Casting: Podemos castear a Value Objects
+- ✅ Repository Pattern: Aislamos Eloquent detrás de interfaces
+- ✅ Testeable: Podemos mockear repositorios en tests
+
+### Capa 3: Application Layer (Aplicación)
+
+**Ubicación:** `app/Application/` (aunque en este proyecto está implícita)
+
+**Responsabilidad:** Coordina casos de uso, orquesta servicios de dominio.
+
+**Contenido:**
+- **Use Cases:** Casos de uso de la aplicación
+- **DTOs:** Data Transfer Objects
+- **Commands:** Comandos de aplicación
+- **Queries:** Consultas de aplicación
+
+**Ejemplo conceptual:**
+```php
+// app/Application/UseCases/CreateTaskUseCase.php
+class CreateTaskUseCase
+{
+    public function __construct(
+        private readonly TaskRepositoryInterface $taskRepo,
+        private readonly ProjectRepositoryInterface $projectRepo,
+        private readonly TaskDescriptionGenerator $aiGenerator
+    ) {}
+
+    public function execute(CreateTaskDTO $dto): Task
+    {
+        // 1. Validar que el proyecto existe
+        $project = $this->projectRepo->findById($dto->projectId);
+        if (!$project) {
+            throw new ProjectNotFoundException();
+        }
+
+        // 2. Generar descripción con IA si no se proporciona
+        $description = $dto->description;
+        if (!$description && $dto->useAI) {
+            $description = $this->aiGenerator->generate($dto->title);
+        }
+
+        // 3. Crear tarea
+        $task = $this->taskRepo->create([
+            'project_id' => $dto->projectId,
+            'title' => $dto->title,
+            'description' => $description,
+            'priority' => $dto->priority,
+            'status' => Status::PENDING,
+            'created_by' => $dto->createdBy,
+        ]);
+
+        // 4. Disparar evento
+        event(new TaskCreated($task));
+
+        return $task;
+    }
+}
+```
+
+**En este proyecto:**
+Los MCP Tools actúan como la capa de aplicación, coordinando servicios de dominio e infraestructura.
+
+### Capa 4: Presentation Layer (Presentación)
+
+**Ubicación:** `app/Http/`, `app/Livewire/`, `app/Mcp/`
+
+**Responsabilidad:** Interfaz con el usuario (humano o IA).
+
+**Contenido:**
+- **Controllers:** Controladores HTTP tradicionales
+- **Livewire Components:** Componentes interactivos
+- **MCP Tools/Resources/Prompts:** Interfaz para IA
+- **Form Requests:** Validación de entrada
+- **Views:** Plantillas Blade
+
+**Ejemplo - Controlador HTTP:**
+```php
+// app/Http/Controllers/TaskController.php
+class TaskController extends Controller
+{
+    public function update(
+        UpdateTaskRequest $request,
+        int $id,
+        TaskRepositoryInterface $repository,
+        TaskStatusManager $statusManager
+    ) {
+        $task = $repository->findById($id);
+
+        if (!$task) {
+            return back()->with('error', 'Task not found');
+        }
+
+        // Actualizar datos básicos
+        $repository->update($id, $request->validated());
+
+        // Cambiar estado si se proporciona
+        if ($request->has('status')) {
+            try {
+                $statusManager->transitionTo($task, Status::from($request->status));
+            } catch (InvalidArgumentException $e) {
+                return back()->with('error', $e->getMessage());
+            }
+        }
+
+        return back()->with('success', 'Task updated successfully');
+    }
+}
+```
+
+**Ejemplo - Livewire Component:**
+```php
+// app/Livewire/TaskList.php
+class TaskList extends Component
+{
+    use WithPagination;
+
+    public $search = '';
+    public $statusFilter = '';
+    public $projectFilter = '';
+
+    public function __construct(
+        private readonly TaskRepositoryInterface $repository
+    ) {}
+
+    public function render()
+    {
+        $tasks = $this->repository->all();
+
+        // Aplicar filtros
+        if ($this->search) {
+            $tasks = $this->repository->search($this->search);
+        }
+
+        if ($this->statusFilter) {
+            $tasks = $tasks->where('status', $this->statusFilter);
+        }
+
+        if ($this->projectFilter) {
+            $tasks = $tasks->where('project_id', $this->projectFilter);
+        }
+
+        return view('livewire.task-list', [
+            'tasks' => $tasks,
+        ]);
+    }
+}
+```
+
+**Ejemplo - MCP Tool:**
+```php
+// app/Mcp/Tools/CreateTask.php
+class CreateTask extends Tool
+{
+    // Ya lo vimos en el Capítulo 2
+    // Es parte de la capa de presentación para IA
+}
+```
+
+## 3.4 Flujo Completo a Través de las Capas
+
+Veamos un ejemplo completo de cómo fluye una petición a través de todas las capas:
+
+### Escenario: Usuario crea una tarea vía MCP Tool
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. PRESENTATION LAYER (MCP Tool)                                │
+│                                                                  │
+│ Claude ejecuta: CreateTask tool                                 │
+│ Parámetros: {                                                   │
+│   "project_id": 1,                                              │
+│   "title": "Implement authentication",                         │
+│   "priority": "high"                                            │
+│ }                                                               │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 2. APPLICATION LAYER (Implícita en el Tool)                     │
+│                                                                  │
+│ CreateTask::handle() coordina:                                  │
+│ - Extrae parámetros del Request                                │
+│ - Convierte "high" a Priority::HIGH (Value Object)             │
+│ - Establece Status::PENDING por defecto                        │
+│ - Prepara array de datos                                        │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 3. DOMAIN LAYER (Lógica de Negocio)                            │
+│                                                                  │
+│ Priority::from("high") ejecuta:                                 │
+│ - Valida que "high" es un valor válido                         │
+│ - Retorna Priority::HIGH enum                                   │
+│                                                                  │
+│ Status::PENDING usado como estado inicial                       │
+│ - Automáticamente tipado y validado                            │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 4. INFRASTRUCTURE LAYER (Persistencia)                         │
+│                                                                  │
+│ TaskRepository::create() ejecuta:                               │
+│ - Recibe array con Value Objects                               │
+│ - Task::create() (Eloquent Model)                              │
+│ - Eloquent castea automáticamente:                             │
+│   * Status::PENDING → 'pending' (en DB)                        │
+│   * Priority::HIGH → 'high' (en DB)                            │
+│ - INSERT en PostgreSQL                                          │
+│ - Retorna Task model con Value Objects casteados               │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 5. VUELTA A PRESENTATION LAYER                                  │
+│                                                                  │
+│ CreateTask::handle() retorna Response::json([                   │
+│   'success' => true,                                            │
+│   'task' => [                                                   │
+│     'id' => 42,                                                 │
+│     'title' => 'Implement authentication',                      │
+│     'status' => 'pending',  // Value Object → string            │
+│     'priority' => 'high'    // Value Object → string            │
+│   ]                                                             │
+│ ])                                                              │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 6. CLIENTE MCP (Claude)                                         │
+│                                                                  │
+│ Claude recibe la respuesta y dice:                             │
+│ "He creado la tarea #42 'Implement authentication' con          │
+│  prioridad alta. La tarea está lista para ser asignada."       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Código Completo del Flujo
+
+**1. Presentation Layer - MCP Tool:**
+```php
+// app/Mcp/Tools/CreateTask.php
+class CreateTask extends Tool
+{
+    public function __construct(
+        private readonly TaskRepositoryInterface $taskRepository  // Dependency Injection
+    ) {}
+
+    public function handle(Request $request): Response
+    {
+        // APPLICATION LAYER: Coordinar y preparar datos
+        $data = [
+            'project_id' => $request->input('project_id'),
+            'title' => $request->input('title'),
+            'priority' => Priority::from($request->input('priority', 'medium')), // DOMAIN
+            'status' => Status::PENDING,                                         // DOMAIN
+            'created_by' => $request->input('created_by'),
+        ];
+
+        // INFRASTRUCTURE LAYER: Persistir
+        $task = $this->taskRepository->create($data);
+
+        // PRESENTATION LAYER: Formatear respuesta
+        return Response::json([
+            'success' => true,
+            'task' => [
+                'id' => $task->id,
+                'title' => $task->title,
+                'status' => $task->status->value,      // Value Object → string
+                'priority' => $task->priority->value,  // Value Object → string
+            ],
+        ]);
+    }
+}
+```
+
+**2. Domain Layer - Value Object:**
+```php
+// app/Domain/TaskManagement/ValueObjects/Priority.php
+enum Priority: string
+{
+    case HIGH = 'high';
+    case MEDIUM = 'medium';
+    // ...
+
+    public static function from(string $value): self
+    {
+        return match($value) {
+            'high' => self::HIGH,
+            'medium' => self::MEDIUM,
+            'low' => self::LOW,
+            'critical' => self::CRITICAL,
+            default => throw new \ValueError("Invalid priority: {$value}"),
+        };
+    }
+}
+```
+
+**3. Infrastructure Layer - Repository:**
+```php
+// app/Infrastructure/Persistence/Eloquent/Repositories/EloquentTaskRepository.php
+class EloquentTaskRepository implements TaskRepositoryInterface
+{
+    public function create(array $data): Task
+    {
+        // Eloquent casteará automáticamente Priority y Status
+        return Task::create($data);
+    }
+}
+```
+
+**4. Infrastructure Layer - Eloquent Model:**
+```php
+// app/Infrastructure/Persistence/Eloquent/Models/Task.php
+class Task extends Model
+{
+    protected $casts = [
+        'status' => Status::class,      // Casting bidireccional automático
+        'priority' => Priority::class,  // DB ↔ Value Object
+    ];
+}
+```
+
+## 3.5 Dependency Injection y Service Container
+
+Laravel usa **Dependency Injection** extensivamente para resolver dependencias automáticamente.
+
+### ¿Cómo funciona?
+
+**Sin DI:**
+```php
+// ❌ Acoplamiento alto
+class CreateTask extends Tool
+{
+    public function handle(Request $request): Response
+    {
+        // Instanciamos manualmente
+        $repository = new EloquentTaskRepository();
+        $task = $repository->create([...]);
+        // ...
+    }
+}
+```
+
+**Problemas:**
+- ❌ Difícil de testear (no puedes mockear)
+- ❌ Acoplado a implementación específica
+- ❌ Viola Dependency Inversion Principle
+
+**Con DI:**
+```php
+// ✅ Bajo acoplamiento
+class CreateTask extends Tool
+{
+    public function __construct(
+        private readonly TaskRepositoryInterface $repository  // Interface, no implementación
+    ) {}
+
+    public function handle(Request $request): Response
+    {
+        $task = $this->repository->create([...]);  // Usa la interface
+        // ...
+    }
+}
+```
+
+**Ventajas:**
+- ✅ Testeable (puedes inyectar mock)
+- ✅ Flexible (puedes cambiar implementación)
+- ✅ Sigue SOLID principles
+
+### Configurando el Service Container
+
+**Service Provider:**
+```php
+// app/Providers/RepositoryServiceProvider.php
+class RepositoryServiceProvider extends ServiceProvider
+{
+    // Binding de interfaces a implementaciones
+    public $bindings = [
+        TaskRepositoryInterface::class => EloquentTaskRepository::class,
+        ProjectRepositoryInterface::class => EloquentProjectRepository::class,
+        TagRepositoryInterface::class => EloquentTagRepository::class,
+    ];
+
+    public function register(): void
+    {
+        // Laravel resuelve automáticamente estos bindings
+    }
+}
+```
+
+**Registrar el Provider:**
+```php
+// bootstrap/providers.php
+return [
+    App\Providers\AppServiceProvider::class,
+    App\Providers\RepositoryServiceProvider::class,  // ← Nuestro provider
+];
+```
+
+**Ahora Laravel sabe:**
+```
+Cuando alguien pide TaskRepositoryInterface
+    → Inyectar EloquentTaskRepository
+```
+
+### Testing con DI
+
+**Test unitario mockeando repositorio:**
+```php
+// tests/Unit/Mcp/CreateTaskToolTest.php
+class CreateTaskToolTest extends TestCase
+{
+    public function test_creates_task_successfully()
+    {
+        // 1. Crear mock del repositorio
+        $mockRepo = $this->createMock(TaskRepositoryInterface::class);
+
+        // 2. Configurar expectativa
+        $mockRepo->expects($this->once())
+            ->method('create')
+            ->willReturn(new Task(['id' => 1, 'title' => 'Test']));
+
+        // 3. Inyectar mock en el tool
+        $tool = new CreateTask($mockRepo);
+
+        // 4. Ejecutar
+        $response = $tool->handle(new Request(['title' => 'Test', ...]));
+
+        // 5. Verificar
+        $this->assertTrue($response->getData()['success']);
+    }
+}
+```
+
+## 3.6 Estructura de Directorios Completa
+
+```
+laravelmcp/
+├── app/
+│   ├── Domain/                           # ← DOMAIN LAYER
+│   │   ├── TaskManagement/
+│   │   │   ├── Contracts/
+│   │   │   │   └── Repositories/
+│   │   │   │       ├── TaskRepositoryInterface.php
+│   │   │   │       └── ProjectRepositoryInterface.php
+│   │   │   ├── Services/
+│   │   │   │   ├── TaskStatusManager.php
+│   │   │   │   └── TaskPriorityCalculator.php
+│   │   │   └── ValueObjects/
+│   │   │       ├── Status.php
+│   │   │       └── Priority.php
+│   │   ├── AIIntegration/
+│   │   │   └── Services/
+│   │   │       ├── OpenAIService.php
+│   │   │       └── TaskDescriptionGenerator.php
+│   │   └── Analytics/
+│   │       └── Services/
+│   │           ├── MetricsCollector.php
+│   │           └── ReportGenerator.php
+│   │
+│   ├── Infrastructure/                   # ← INFRASTRUCTURE LAYER
+│   │   └── Persistence/
+│   │       └── Eloquent/
+│   │           ├── Models/
+│   │           │   ├── Task.php
+│   │           │   ├── Project.php
+│   │           │   └── Tag.php
+│   │           └── Repositories/
+│   │               ├── EloquentTaskRepository.php
+│   │               └── EloquentProjectRepository.php
+│   │
+│   ├── Mcp/                              # ← PRESENTATION LAYER (para IA)
+│   │   ├── Servers/
+│   │   │   ├── TaskToolsServer.php
+│   │   │   └── AIAssistantServer.php
+│   │   ├── Tools/
+│   │   │   ├── CreateTask.php
+│   │   │   └── UpdateTask.php
+│   │   └── Resources/
+│   │       ├── TeamMetrics.php
+│   │       └── ProjectMetrics.php
+│   │
+│   ├── Http/                             # ← PRESENTATION LAYER (para humanos)
+│   │   └── Controllers/
+│   │       └── TaskController.php
+│   │
+│   ├── Livewire/                         # ← PRESENTATION LAYER (componentes)
+│   │   ├── Dashboard.php
+│   │   └── TaskList.php
+│   │
+│   └── Providers/                        # ← SERVICE CONTAINER
+│       ├── AppServiceProvider.php
+│       └── RepositoryServiceProvider.php
+│
+├── database/
+│   ├── migrations/
+│   └── seeders/
+│
+├── resources/
+│   └── views/
+│       ├── layouts/
+│       └── livewire/
+│
+└── tests/
+    ├── Unit/                             # Tests del Domain Layer
+    │   └── Domain/
+    ├── Feature/                          # Tests del Infrastructure Layer
+    │   └── Repositories/
+    └── Integration/                      # Tests de integración (MCP)
+        └── Mcp/
+```
+
+## 3.7 Ventajas de Esta Arquitectura
+
+### 1. **Separación de Responsabilidades**
+
+Cada capa tiene un propósito claro:
+- Domain: Reglas de negocio
+- Infrastructure: Detalles técnicos
+- Presentation: Interfaz con el usuario
+
+### 2. **Testeable**
+
+```php
+// Test unitario de Domain (no necesita DB)
+class StatusTest extends TestCase
+{
+    public function test_pending_can_transition_to_in_progress()
+    {
+        $pending = Status::PENDING;
+        $this->assertTrue($pending->canTransitionTo(Status::IN_PROGRESS));
+    }
+}
+
+// Test de Infrastructure (necesita DB)
+class TaskRepositoryTest extends TestCase
+{
+    use RefreshDatabase;
+
+    public function test_can_create_task()
+    {
+        $repo = app(TaskRepositoryInterface::class);
+        $task = $repo->create([...]);
+        $this->assertNotNull($task);
+    }
+}
+```
+
+### 3. **Flexible y Mantenible**
+
+Puedes cambiar tecnologías sin afectar la lógica de negocio:
+
+```php
+// Cambiar de Eloquent a Doctrine ORM
+// Solo modificas la capa Infrastructure
+
+// Antes:
+class EloquentTaskRepository implements TaskRepositoryInterface { ... }
+
+// Después:
+class DoctrineTaskRepository implements TaskRepositoryInterface { ... }
+
+// El Domain Layer NO CAMBIA
+// Los MCP Tools NO CAMBIAN
+// Solo cambias el binding en el ServiceProvider
+```
+
+### 4. **Reutilizable**
+
+La misma lógica de negocio se usa en:
+- ✅ Controladores HTTP
+- ✅ MCP Tools
+- ✅ API REST
+- ✅ Comandos de consola
+- ✅ Jobs en cola
+- ✅ Tests
+
+### 5. **Escalable**
+
+Agregar nuevas funcionalidades es estructurado:
+1. Crea Value Objects/Entities en Domain
+2. Crea Services de dominio si hay lógica compleja
+3. Crea Repository Interface en Domain
+4. Implementa Repository en Infrastructure
+5. Crea Tool/Controller en Presentation
+6. Registra bindings en ServiceProvider
+
+## 3.8 Resumen del Capítulo 3
+
+🎯 **Conceptos Clave Aprendidos:**
+
+1. **Domain-Driven Design (DDD)** pone el negocio al centro
+   - Ubiquitous Language: Código que habla el lenguaje del negocio
+   - Value Objects: Objetos inmutables con comportamiento
+   - Domain Services: Lógica de negocio compleja
+   - Repository Interfaces: Contratos para acceso a datos
+
+2. **3 Bounded Contexts** separan responsabilidades
+   - TaskManagement: Gestión de tareas y proyectos
+   - AIIntegration: Servicios de IA y OpenAI
+   - Analytics: Métricas y reportes
+
+3. **4 Capas arquitectónicas** organizan el código
+   - Domain Layer: Lógica de negocio pura
+   - Infrastructure Layer: Detalles técnicos (Eloquent, DB)
+   - Application Layer: Coordinación de casos de uso
+   - Presentation Layer: Interfaz (MCP, HTTP, Livewire)
+
+4. **Dependency Injection** permite flexibilidad
+   - Service Container resuelve dependencias
+   - Interfaces en vez de implementaciones concretas
+   - Testeable y mantenible
+
+5. **Value Objects** encapsulan validación y comportamiento
+   - Status y Priority son enums con métodos
+   - Casting automático Eloquent ↔ Value Object
+   - Tipo-seguro y inmutable
+
+🔜 **Próximo Capítulo:**
+En el Capítulo 4 profundizaremos en **Value Objects**, viendo cómo crearlos, usarlos, y por qué son fundamentales en DDD.
+
+---
+
+**Estado del Tutorial:** Capítulos 1-3 de 15 completados ✓
