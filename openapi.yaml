@@ -1,0 +1,674 @@
+openapi: 3.0.3
+info:
+  title: TaskMaster API
+  description: |
+    REST API para el sistema de gestión de tareas TaskMaster.
+
+    Esta API permite gestionar tareas, proyectos, usuarios y tags a través de endpoints RESTful.
+    Todos los endpoints requieren autenticación mediante Laravel Sanctum.
+
+    ## Autenticación
+
+    Usa Bearer tokens de Laravel Sanctum en el header Authorization:
+    ```
+    Authorization: Bearer {your-token-here}
+    ```
+
+    Para obtener un token, ejecuta:
+    ```bash
+    php artisan tinker
+    >>> User::first()->createToken('api')->plainTextToken
+    ```
+  version: 1.0.0
+  contact:
+    name: TaskMaster Team
+    url: https://github.com/yourusername/laravelmcp
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost/api
+    description: Servidor de desarrollo local
+  - url: http://localhost:8000/api
+    description: Servidor de desarrollo con artisan serve
+
+tags:
+  - name: Tasks
+    description: Operaciones CRUD para tareas
+
+paths:
+  /tasks:
+    get:
+      tags:
+        - Tasks
+      summary: Listar todas las tareas
+      description: |
+        Obtiene un listado de todas las tareas con sus relaciones.
+        Soporta filtrado por múltiples criterios.
+      operationId: listTasks
+      parameters:
+        - name: project_id
+          in: query
+          description: Filtrar por ID de proyecto
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+          example: 1
+        - name: status
+          in: query
+          description: Filtrar por estado de la tarea
+          required: false
+          schema:
+            type: string
+            enum: [pending, in_progress, review, completed, blocked]
+          example: in_progress
+        - name: priority
+          in: query
+          description: Filtrar por prioridad
+          required: false
+          schema:
+            type: string
+            enum: [low, medium, high, critical]
+          example: high
+        - name: assigned_to
+          in: query
+          description: Filtrar por ID de usuario asignado
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+          example: 2
+        - name: search
+          in: query
+          description: Buscar en título y descripción
+          required: false
+          schema:
+            type: string
+          example: "autenticación"
+      security:
+        - sanctum: []
+      responses:
+        '200':
+          description: Lista de tareas obtenida exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskCollection'
+              example:
+                data:
+                  - id: 1
+                    title: "Implementar autenticación"
+                    description: "Añadir sistema de autenticación con Laravel Sanctum"
+                    status: "in_progress"
+                    priority: "high"
+                    project:
+                      id: 1
+                      name: "TaskMaster API"
+                      description: "Backend API REST"
+                    assigned_to: 2
+                    assignee:
+                      id: 2
+                      name: "María García"
+                      email: "maria@example.com"
+                    created_by: 1
+                    creator:
+                      id: 1
+                      name: "Admin User"
+                      email: "admin@taskmaster.test"
+                    tags:
+                      - id: 1
+                        name: "Backend"
+                        slug: "backend"
+                        color: "#3B82F6"
+                    due_date: "2024-12-31"
+                    estimated_hours: 8
+                    actual_hours: null
+                    is_overdue: false
+                    is_completed: false
+                    is_blocked: false
+                    created_at: "2024-01-15T10:00:00+00:00"
+                    updated_at: "2024-01-15T12:30:00+00:00"
+                meta:
+                  count: 87
+                  total: 87
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags:
+        - Tasks
+      summary: Crear nueva tarea
+      description: Crea una nueva tarea en el sistema
+      operationId: createTask
+      security:
+        - sanctum: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+            example:
+              title: "Nueva tarea desde API"
+              description: "Descripción detallada de la tarea"
+              project_id: 1
+              assigned_to: 2
+              status: "pending"
+              priority: "high"
+              due_date: "2024-12-31"
+              estimated_hours: 8
+              tags: [1, 2, 3]
+      responses:
+        '201':
+          description: Tarea creada exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResource'
+              example:
+                data:
+                  id: 88
+                  title: "Nueva tarea desde API"
+                  description: "Descripción detallada de la tarea"
+                  status: "pending"
+                  priority: "high"
+                  project:
+                    id: 1
+                    name: "TaskMaster API"
+                  assigned_to: 2
+                  assignee:
+                    id: 2
+                    name: "María García"
+                    email: "maria@example.com"
+                  tags:
+                    - id: 1
+                      name: "Backend"
+                      slug: "backend"
+                      color: "#3B82F6"
+                  created_at: "2024-01-20T14:30:00+00:00"
+                  updated_at: "2024-01-20T14:30:00+00:00"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /tasks/{id}:
+    get:
+      tags:
+        - Tasks
+      summary: Obtener tarea específica
+      description: Obtiene los detalles completos de una tarea, incluyendo todas sus relaciones
+      operationId: getTask
+      security:
+        - sanctum: []
+      parameters:
+        - name: id
+          in: path
+          description: ID de la tarea
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+          example: 1
+      responses:
+        '200':
+          description: Tarea obtenida exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags:
+        - Tasks
+      summary: Actualizar tarea (reemplazar)
+      description: Actualiza todos los campos de una tarea
+      operationId: updateTaskPut
+      security:
+        - sanctum: []
+      parameters:
+        - name: id
+          in: path
+          description: ID de la tarea
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+          example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTaskRequest'
+      responses:
+        '200':
+          description: Tarea actualizada exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+    patch:
+      tags:
+        - Tasks
+      summary: Actualizar tarea (parcial)
+      description: Actualiza solo los campos especificados de una tarea
+      operationId: updateTaskPatch
+      security:
+        - sanctum: []
+      parameters:
+        - name: id
+          in: path
+          description: ID de la tarea
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+          example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTaskRequest'
+            example:
+              status: "completed"
+              actual_hours: 6
+      responses:
+        '200':
+          description: Tarea actualizada exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+    delete:
+      tags:
+        - Tasks
+      summary: Eliminar tarea
+      description: Elimina (soft delete) una tarea del sistema
+      operationId: deleteTask
+      security:
+        - sanctum: []
+      parameters:
+        - name: id
+          in: path
+          description: ID de la tarea a eliminar
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+          example: 1
+      responses:
+        '200':
+          description: Tarea eliminada exitosamente
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Task deleted successfully"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    sanctum:
+      type: http
+      scheme: bearer
+      bearerFormat: Sanctum
+      description: |
+        Laravel Sanctum token authentication.
+        Obtén tu token ejecutando:
+        ```
+        php artisan tinker
+        >>> User::first()->createToken('api')->plainTextToken
+        ```
+
+  schemas:
+    Task:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+          example: 1
+        title:
+          type: string
+          maxLength: 255
+          example: "Implementar autenticación"
+        description:
+          type: string
+          nullable: true
+          example: "Añadir sistema de autenticación con Laravel Sanctum"
+        status:
+          type: string
+          enum: [pending, in_progress, review, completed, blocked]
+          example: "in_progress"
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+          example: "high"
+        project_id:
+          type: integer
+          example: 1
+        project:
+          $ref: '#/components/schemas/ProjectSummary'
+        assigned_to:
+          type: integer
+          nullable: true
+          example: 2
+        assignee:
+          allOf:
+            - $ref: '#/components/schemas/UserSummary'
+            - nullable: true
+        created_by:
+          type: integer
+          example: 1
+        creator:
+          $ref: '#/components/schemas/UserSummary'
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tag'
+        comments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Comment'
+        due_date:
+          type: string
+          format: date
+          nullable: true
+          example: "2024-12-31"
+        estimated_hours:
+          type: integer
+          nullable: true
+          minimum: 0
+          example: 8
+        actual_hours:
+          type: integer
+          nullable: true
+          minimum: 0
+          example: 6
+        is_overdue:
+          type: boolean
+          readOnly: true
+          example: false
+        is_completed:
+          type: boolean
+          readOnly: true
+          example: false
+        is_blocked:
+          type: boolean
+          readOnly: true
+          example: false
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+          example: "2024-01-15T10:00:00+00:00"
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+          example: "2024-01-15T12:30:00+00:00"
+
+    TaskResource:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/Task'
+
+    TaskCollection:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        meta:
+          type: object
+          properties:
+            count:
+              type: integer
+              example: 87
+            total:
+              type: integer
+              example: 87
+
+    CreateTaskRequest:
+      type: object
+      required:
+        - title
+        - project_id
+      properties:
+        title:
+          type: string
+          maxLength: 255
+          example: "Nueva tarea"
+        description:
+          type: string
+          nullable: true
+          example: "Descripción de la tarea"
+        project_id:
+          type: integer
+          minimum: 1
+          example: 1
+        assigned_to:
+          type: integer
+          nullable: true
+          minimum: 1
+          example: 2
+        status:
+          type: string
+          enum: [pending, in_progress, review, completed, blocked]
+          nullable: true
+          example: "pending"
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+          nullable: true
+          example: "medium"
+        due_date:
+          type: string
+          format: date
+          nullable: true
+          example: "2024-12-31"
+        estimated_hours:
+          type: integer
+          nullable: true
+          minimum: 0
+          example: 8
+        tags:
+          type: array
+          nullable: true
+          items:
+            type: integer
+          example: [1, 2, 3]
+
+    UpdateTaskRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          maxLength: 255
+          example: "Título actualizado"
+        description:
+          type: string
+          nullable: true
+          example: "Nueva descripción"
+        project_id:
+          type: integer
+          minimum: 1
+          example: 1
+        assigned_to:
+          type: integer
+          nullable: true
+          minimum: 1
+          example: 3
+        status:
+          type: string
+          enum: [pending, in_progress, review, completed, blocked]
+          nullable: true
+          example: "completed"
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+          nullable: true
+          example: "high"
+        due_date:
+          type: string
+          format: date
+          nullable: true
+          example: "2024-12-31"
+        estimated_hours:
+          type: integer
+          nullable: true
+          minimum: 0
+          example: 10
+        actual_hours:
+          type: integer
+          nullable: true
+          minimum: 0
+          example: 8
+        tags:
+          type: array
+          nullable: true
+          items:
+            type: integer
+          example: [1, 2]
+
+    ProjectSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "TaskMaster API"
+        description:
+          type: string
+          nullable: true
+          example: "Backend API REST para TaskMaster"
+
+    UserSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "María García"
+        email:
+          type: string
+          format: email
+          example: "maria@example.com"
+
+    Tag:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "Backend"
+        slug:
+          type: string
+          example: "backend"
+        color:
+          type: string
+          example: "#3B82F6"
+
+    Comment:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        content:
+          type: string
+          example: "Gran progreso en esta tarea"
+        user:
+          type: string
+          example: "María García"
+        created_at:
+          type: string
+          format: date-time
+          example: "2024-01-15T14:30:00+00:00"
+
+    Error:
+      type: object
+      properties:
+        message:
+          type: string
+          example: "Error message"
+
+    ValidationError:
+      type: object
+      properties:
+        message:
+          type: string
+          example: "The title field is required. (and 1 more error)"
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          example:
+            title:
+              - "The task title is required."
+            project_id:
+              - "The task must belong to a project."
+
+  responses:
+    Unauthorized:
+      description: No autenticado - Token inválido o faltante
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            message: "Unauthenticated."
+
+    NotFound:
+      description: Recurso no encontrado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            message: "Task not found"
+
+    ValidationError:
+      description: Error de validación
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationError'
